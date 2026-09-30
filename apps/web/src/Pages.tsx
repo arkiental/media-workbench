@@ -26,12 +26,12 @@ function JobProgress({job,name}:{job:Job;name:string}) {
     return <span className={`job-outcome job-outcome-${job.state}`}>{statusNames[job.state]}</span>;
   }
   if (job.state === 'queued') return <span className="job-waiting">Waiting to start</span>;
-  const reported = ['downloading','processing'].includes(job.state) && Number.isFinite(job.progress) && job.progress > 0;
+  const reported = ['downloading','processing','validating'].includes(job.state) && Number.isFinite(job.progress) && job.progress > 0;
   const progress = reported ? Math.min(1, job.progress) : undefined;
   const label = job.state === 'preparing' ? (job.request.type === 'download' ? 'Preparing download' : 'Preparing media') : job.state === 'cancelling' ? 'Stopping job' : statusNames[job.state];
   return <div className="job-progress-content">
     <progress max={1} value={progress} aria-label={`${name}: ${label}`}/>
-    <span>{reported ? (progress! < .01 ? '<1%' : `${Math.floor(progress! * 100)}%`) : label}</span>
+    <span>{reported ? `${job.state === 'validating' ? 'Checking file: ' : ''}${progress! < .01 ? '<1%' : `${Math.floor(progress! * 100)}%`}` : label}</span>
     {!reported && ['downloading','processing'].includes(job.state) && <small>Progress not reported yet.</small>}
   </div>;
 }

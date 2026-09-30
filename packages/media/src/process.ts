@@ -50,7 +50,7 @@ export async function runProcess(binary:string, args:string[], ctx?:ExecutionCon
     child.stdout.on('data',(data:Buffer)=>{bytes+=data.length;if(bytes>(options.maxStdoutBytes??16*1024*1024)){fail(new Error('Native tool output exceeded limit'));return;}chunks.push(data);outputLines('stdout',data);});
     child.stderr.on('data',(data:Buffer)=>{stderr=(stderr+data.toString('utf8')).slice(-(options.maxStderrBytes??32768));
       outputLines('stderr',data);
-      const matches=[...data.toString().matchAll(/out_time_us=(\d+)/g)];if(matches.length&&options.duration)ctx?.onProgress?.(Math.min(.98,Number(matches.at(-1)![1])/1e6/options.duration));
+      const matches=[...data.toString().matchAll(/out_time_us=(-?\d+)/g)];if(matches.length&&options.duration)ctx?.onProgress?.(Math.min(.98,Math.max(0,(Number(matches.at(-1)![1])/1e6-(options.progressOffset||0))/options.duration)));
     });
     child.on('error',e=>{failed=e;});
     child.on('close',async code=>{outputLines('stdout');outputLines('stderr');finished=true;clearTimeout(timeout);if(monitor)clearInterval(monitor);ctx?.signal.removeEventListener('abort',aborted);await cleanup;

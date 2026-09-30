@@ -40,7 +40,9 @@ export async function probe(path:string,tools:ToolPaths,ctx?:ExecutionContext):P
 }
 export async function validateMedia(path:string,tools:ToolPaths,ctx?:ExecutionContext):Promise<MediaInfo>{
   const media=await probe(path,tools,ctx);
-  await runProcess(tools.ffmpeg,[...BASE,'-xerror',...INPUT_POLICY,'-i',safePath(path),'-map','0:v?','-map','0:a?','-f','null','-'],ctx,{maxStdoutBytes:1024});
+  ctx?.onProgress?.(0,'Checking the completed file');
+  const checking=ctx?{...ctx,onProgress:(progress:number)=>ctx.onProgress?.(progress,`Checking the completed file: ${Math.floor(progress*100)}%`)}:undefined;
+  await runProcess(tools.ffmpeg,[...BASE,'-progress','pipe:2','-xerror',...INPUT_POLICY,'-i',safePath(path),'-map','0:v?','-map','0:a?','-f','null','-'],checking,{maxStdoutBytes:1024,duration:media.duration});
   return media;
 }
 const encoderCache=new Map<string,EncoderCapability[]>();
@@ -153,7 +155,12 @@ async function makeFilters(recipe:Recipe,media:MediaInfo,workDir:string,extraAud
 }
 
 async function publish(temp:string,output:string){try{await link(temp,output);}catch(e){if((e as NodeJS.ErrnoException).code!=='EXDEV')throw e;await copyFile(temp,output,constants.COPYFILE_EXCL);}await unlink(temp);}
-async function keyframes(path:string,tools:ToolPaths,ctx:ExecutionContext,media:MediaInfo):Promise<number[]>{const d=JSON.parse((await runProcess(tools.ffprobe,['-v','error',...INPUT_POLICY,'-select_streams','v:0','-skip_frame','nokey','-show_frames','-show_entries','frame=best_effort_timestamp','-of','json',safePath(path)],ctx,{maxStdoutBytes:16*1024*1024})).stdout.toString());const tb=timeBaseSeconds(media.streams.find(s=>s.type==='video')?.timeBase),origin=Math.round(media.startTime/tb);return (d.frames??[]).map((f:any)=>(num(f.best_effort_timestamp)-origin)*tb);}
+const keyframeCache=new Map<string,number[]>();
+async function keyframes(path:string,tools:ToolPaths,ctx:ExecutionContext,media:MediaInfo):Promise<number[]>{
+ if(ctx.signal.aborted)throw new Error('Operation cancelled');const file=await stat(path);const key=`${resolve(path)}:${file.size}:${file.mtimeMs}:${file.ctimeMs}:${tools.ffprobe}:${media.startTime}`;const cached=keyframeCache.get(key);if(cached)return cached;
+ const d=JSON.parse((await runProcess(tools.ffprobe,['-v','error',...INPUT_POLICY,'-select_streams','v:0','-skip_frame','nokey','-show_frames','-show_entries','frame=best_effort_timestamp','-of','json',safePath(path)],ctx,{maxStdoutBytes:16*1024*1024})).stdout.toString());const tb=timeBaseSeconds(media.streams.find(s=>s.type==='video')?.timeBase),origin=Math.round(media.startTime/tb);const result=(d.frames??[]).map((f:any)=>(num(f.best_effort_timestamp)-origin)*tb);
+ if(keyframeCache.size>=64)keyframeCache.delete(keyframeCache.keys().next().value!);keyframeCache.set(key,result);return result;
+}
 export async function exportMedia(inputPath:string,outputPath:string,recipeInput:Recipe,optionsInput:ExportOptions,tools:ToolPaths,ctx:ExecutionContext,extraAudioPath?:string):Promise<{media:MediaInfo;plan:Plan}>{
   const recipe=RecipeSchema.parse(recipeInput),options=ExportSchema.parse(optionsInput);const source=await probe(inputPath,tools,ctx);const encoders=(await testEncoders(tools,ctx.workDir,ctx)).filter(e=>!ctx.allowedEncoders?.length||ctx.allowedEncoders.includes(e.name));const plan=planExport(recipe,options,source,encoders);ctx.onPlan?.(plan);
   if(['mix','replace'].includes(recipe.audio.mode)&&!extraAudioPath)throw new Error('Replacement/mixed audio source is required');
@@ -165,7 +172,18 @@ export async function exportMedia(inputPath:string,outputPath:string,recipeInput
       // End snaps forward so output is a complete group of pictures and preserves decoding dependencies.
       const end=video?(keys.find(p=>p>=requested.out-1e-6)??source.duration):requested.out;plan.segments=[{in:start,out:end}];plan.duration=end-start;plan.requestedSegments=recipe.segments;plan.warnings.push(`Keyframe copy uses ${start.toFixed(6)}–${end.toFixed(6)} seconds; requested ${requested.in.toFixed(6)}–${requested.out.toFixed(6)}.`);
       const args=[...BASE,...INPUT_POLICY,'-ss',String(start),'-i',safePath(inputPath),'-t',String(end-start),'-map','0:v:0?'];if(recipe.audio.mode!=='mute')args.push('-map',`0:a:${recipe.audio.track}?`);args.push('-c','copy');if(video)args.push('-bsf:v',`noise=amount=0:drop='gte(pts*tb,${end-start})'`);args.push('-map_metadata','0','-avoid_negative_ts','disabled','-n',safePath(temp));ctx.onStage?.('processing');await runProcess(tools.ffmpeg,args,ctx,{outputPath:temp,duration:plan.duration});
-      if(video){ctx.onStage?.('validating');const hash=async(path:string,trim?:string)=>{return (await runProcess(tools.ffmpeg,[...BASE,'-xerror',...INPUT_POLICY,'-i',safePath(path),'-map','0:v:0','-an',...(trim?['-vf',trim]:[]),'-c:v','rawvideo','-fps_mode','vfr','-f','hash','-hash','sha256','-'],ctx)).stdout.toString().trim();};const tb=timeBaseSeconds(source.streams.find(s=>s.type==='video')?.timeBase);const expected=await hash(inputPath,`trim=start_pts=${Math.ceil(start/tb-1e-7)}:end_pts=${Math.ceil(end/tb-1e-7)}`),actual=await hash(temp);if(expected!==actual)throw new Error('Stream copy did not preserve the selected decoded frames; use exact encoding for this codec/GOP boundary');plan.framePreservation='Decoded source/output SHA-256 match';}
+      if(video){
+       ctx.onStage?.('validating');
+       const hash=async(file:string,original=false)=>{
+        const label=original?'Checking original frames':'Checking copied frames';ctx.onProgress?.(0,label);
+        const checking={...ctx,onProgress:(progress:number)=>ctx.onProgress?.(progress,`${label}: ${Math.floor(progress*100)}%`)};
+        const tb=timeBaseSeconds(source.streams.find(s=>s.type==='video')?.timeBase);
+        const seek=original?['-copyts','-start_at_zero','-ss',String(start),'-t',String(end-start+1)]:[];
+        const trim=original?['-vf',`trim=start_pts=${Math.ceil(start/tb-1e-7)}:end_pts=${Math.ceil(end/tb-1e-7)}`]:[];
+        return (await runProcess(tools.ffmpeg,[...BASE,'-progress','pipe:2','-xerror',...INPUT_POLICY,...seek,'-i',safePath(file),'-map','0:v:0','-an',...trim,'-c:v','rawvideo','-fps_mode','vfr','-f','hash','-hash','sha256','-'],checking,{duration:plan.duration,progressOffset:original?start:0})).stdout.toString().trim();
+       };
+       const expected=await hash(inputPath,true),actual=await hash(temp);if(expected!==actual)throw new Error('Stream copy did not preserve the selected decoded frames; use exact encoding for this codec/GOP boundary');plan.framePreservation='Decoded source/output SHA-256 match';
+      }
     }else{
       const filters=await makeFilters(recipe,source,ctx.workDir,!!extraAudioPath,options.frameRate);cleanup.push(...filters.files);const graphPath=join(ctx.workDir,`filter-${randomUUID()}.txt`);await writeFile(graphPath,filters.graph);cleanup.push(graphPath);let subtitlePath:string|undefined;if(recipe.subtitleMode==='soft'&&recipe.captions.length){subtitlePath=join(ctx.workDir,`captions-${randomUUID()}.srt`);await writeFile(subtitlePath,serializeSrt(mapCues(recipe.captions,recipe.segments)));cleanup.push(subtitlePath);}
       const duration=plan.duration,audioBitrate=filters.audio?options.audioBitrate:0;const overhead=Math.max(4096,Math.ceil((options.maxBytes??0)*.035));let bitrate=options.mode==='size'?Math.floor(8*((options.maxBytes??0)-overhead)/duration-audioBitrate):options.bitrate;
