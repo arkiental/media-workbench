@@ -10,7 +10,7 @@ const token=randomUUID(),app=await createServer({dataDir:path.join(out,'service-
 await app.listen({host:'127.0.0.1',port:0});const origin='http://127.0.0.1:'+(app.server.address() as {port:number}).port;
 const browser=await chromium.launch({channel:'msedge',headless:true});const page=await browser.newPage({viewport:{width:1528,height:764}});const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
 try{
- await page.goto(origin);await page.getByLabel('Access token',{exact:true}).fill(token);await page.getByRole('button',{name:'Connect',exact:true}).click();await page.getByRole('button',{name:'Add media',exact:true}).click();
+ await page.goto(origin);await page.getByLabel('Access token',{exact:true}).fill(token);await page.getByRole('button',{name:'Connect',exact:true}).click();await page.getByRole('banner').getByRole('button',{name:'Add media',exact:true}).click();
  await page.getByLabel('Local media',{exact:true}).setInputFiles({name:'content.mp4',mimeType:'video/mp4',buffer:await readFile(sourcePath)});
  await page.getByRole('heading',{name:'Editor · content.mp4'}).waitFor({timeout:45000});await page.getByLabel('Timeline playhead',{exact:true}).fill('3.1');
  await page.getByRole('navigation',{name:'Editing tools'}).getByRole('button',{name:'Text',exact:true}).click();await page.getByRole('button',{name:'Add text overlay at playhead',exact:true}).click();await page.getByLabel('Text overlay 1 text',{exact:true}).fill('Into the wild');
@@ -19,21 +19,30 @@ try{
  await page.screenshot({path:path.join(out,'01-initial.png')});
  await page.getByLabel('Viewer fit').selectOption('fill');await page.screenshot({path:path.join(out,'02-fill.png')});
  const measures=await page.evaluate(()=>Object.fromEntries(['.app-header','.cut-layout','.editor-tool-rail','.cut-player','.cut-preview','.editor-inspector','.context-timeline','.text-properties','.text-advanced'].map(selector=>{const r=document.querySelector(selector)!.getBoundingClientRect();return[selector,{x:r.x,y:r.y,width:r.width,height:r.height}]})));await writeFile(path.join(out,'measurements.json'),JSON.stringify({measures,errors},null,2));
- assert.equal(await page.getByLabel('Text font').inputValue(),'Playfair Display');
+ assert.equal(await page.getByLabel('Text font').inputValue(),'Arial');
  await page.getByLabel('Text size',{exact:true}).fill('100');await page.getByRole('button',{name:'Align text left',exact:true}).click();
  await page.reload();await page.getByLabel('Text overlay 1 text',{exact:true}).waitFor();assert.equal(await page.getByLabel('Text size',{exact:true}).inputValue(),'100');assert.equal(await page.getByRole('button',{name:'Align text left',exact:true}).getAttribute('aria-pressed'),'true');
  await page.getByLabel('Text size',{exact:true}).fill('120');await page.getByRole('button',{name:'Align text center',exact:true}).click();
+ await page.getByRole('button',{name:'Center text in frame',exact:true}).click();
  const selectedTitle=page.getByRole('button',{name:'Select text overlay 1: Into the wild',exact:true}),titleBox=await selectedTitle.boundingBox();assert.ok(titleBox);
  await page.mouse.move(titleBox.x+titleBox.width/2,titleBox.y+titleBox.height/2);await page.mouse.down();await page.mouse.move(titleBox.x+titleBox.width/2+65,titleBox.y+titleBox.height/2-20,{steps:8});await page.mouse.up();
  assert.ok(Number(await page.getByLabel('Text position x',{exact:true}).inputValue())>50,'Dragging updates the persisted position');
  await page.getByRole('button',{name:'Center text in frame',exact:true}).click();assert.equal(await page.getByLabel('Text position x',{exact:true}).inputValue(),'50');
- const corner=await page.getByRole('button',{name:'Resize text nw',exact:true}).boundingBox();assert.ok(corner);await page.mouse.move(corner.x+6,corner.y+6);await page.mouse.down();await page.mouse.move(corner.x-18,corner.y-18,{steps:8});await page.mouse.up();assert.ok(Number(await page.getByLabel('Text size',{exact:true}).inputValue())>120,'Dragging the upper-left corner outward enlarges the title');assert.ok(await page.getByLabel('Text font').isVisible(),'Resizing preserves text selection');await page.getByLabel('Text size',{exact:true}).fill('120');
+ const resizeHandle=page.getByRole('slider',{name:'Resize text nw',exact:true});
+ await resizeHandle.focus();await page.keyboard.press('ArrowUp');assert.equal(await page.getByLabel('Text size',{exact:true}).inputValue(),'121');
+ await page.keyboard.press('Shift+ArrowDown');assert.equal(await page.getByLabel('Text size',{exact:true}).inputValue(),'111');
+ await page.keyboard.press('Home');assert.equal(await page.getByLabel('Text size',{exact:true}).inputValue(),'8');
+ await page.keyboard.press('End');assert.equal(await page.getByLabel('Text size',{exact:true}).inputValue(),'400');
+ await page.getByLabel('Text size',{exact:true}).fill('120');
+ const moveHandle=page.getByRole('button',{name:'Move selected text',exact:true});await moveHandle.focus();await page.keyboard.press('Shift+ArrowRight');assert.equal(await page.getByLabel('Text position x',{exact:true}).inputValue(),'51');await page.keyboard.press('Shift+ArrowDown');assert.equal(await page.getByLabel('Text position y',{exact:true}).inputValue(),'51');
+ await page.getByRole('button',{name:'Center text in frame',exact:true}).click();
+ const corner=await resizeHandle.boundingBox();assert.ok(corner);await page.mouse.move(corner.x+6,corner.y+6);await page.mouse.down();await page.mouse.move(corner.x-18,corner.y-18,{steps:8});await page.mouse.up();assert.ok(Number(await page.getByLabel('Text size',{exact:true}).inputValue())>120,'Dragging the upper-left corner outward enlarges the title');assert.ok(await page.getByLabel('Text font').isVisible(),'Resizing preserves text selection');await page.getByLabel('Text size',{exact:true}).fill('120');
  await page.locator('.track-labels').getByRole('button',{name:'Audio',exact:true}).click();await page.getByRole('heading',{name:'Audio',exact:true}).waitFor();assert.equal(await page.getByLabel('Text font').isVisible(),false);await page.getByRole('button',{name:'Select timeline text 1',exact:true}).click();await page.getByLabel('Text font').waitFor();
  await page.setViewportSize({width:390,height:844});await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve()))));assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
  const mobilePosition=await page.evaluate(()=>({preview:document.querySelector('.cut-preview')!.getBoundingClientRect().toJSON(),title:document.querySelector('.canvas-title')!.getBoundingClientRect().toJSON(),style:document.querySelector('.canvas-title')!.getAttribute('style')}));await writeFile(path.join(out,'mobile-position.json'),JSON.stringify(mobilePosition,null,2));await page.screenshot({path:path.join(out,'03-mobile.png'),fullPage:true});
  await page.setViewportSize({width:1528,height:764});await page.getByLabel('Viewer fit').selectOption('fill');await page.screenshot({path:path.join(out,'04-final.png')});
  await page.getByLabel('Timeline playhead',{exact:true}).fill('7');await page.waitForFunction(()=>{const v=document.querySelector('video');return v&&!v.seeking&&Math.abs(v.currentTime-7)<.01});await page.screenshot({path:path.join(out,'05-clean-source-frame.png')});
  assert.deepEqual(errors,[]);
- await writeFile(path.join(out,'result.json'),JSON.stringify({errors,checks:['Text editing and style persistence','Selection selects relevant inspector','Timeline selection restores text','Canvas dragging persists position','Outward corner dragging enlarges text and retains selection','Center-in-frame resets position','Mobile has no horizontal overflow']},null,2));
+ await writeFile(path.join(out,'result.json'),JSON.stringify({errors,checks:['Text editing and style persistence','Selection selects relevant inspector','Timeline selection restores text','Canvas dragging persists position','Keyboard resizing clamps to 8 and 400 pixels','Keyboard movement updates persisted position','Outward corner dragging enlarges text and retains selection','Center-in-frame resets position','Mobile has no horizontal overflow']},null,2));
  console.log('Contextual UI checks passed. Screenshots: '+out);
 }finally{await browser.close();await app.close()}

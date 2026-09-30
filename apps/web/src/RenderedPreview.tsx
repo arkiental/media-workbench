@@ -1,12 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { Artifact, ExportOptions, Job, Plan, Recipe } from '../../../packages/contracts/src/index';
 import { bytes } from '../../../packages/ui/src/index';
 import { api, contentUrl } from './api';
 
 const terminal=new Set(['completed','failed','cancelled','interrupted']);
-type Props={recipe:Recipe;options:ExportOptions;presetId?:string;jobs:Job[];artifacts:Artifact[];allowed:boolean;refresh:()=>Promise<void>;onOpen:()=>void};
+type Props={recipe:Recipe;options:ExportOptions;presetId?:string;jobs:Job[];artifacts:Artifact[];allowed:boolean;refresh:()=>Promise<void>;onOpen:()=>void;dialogHost:HTMLElement|null};
 
-export function RenderedPreview({recipe,options,presetId,jobs,artifacts,allowed,refresh,onOpen}:Props) {
+export function RenderedPreview({recipe,options,presetId,jobs,artifacts,allowed,refresh,onOpen,dialogHost}:Props) {
   const key=JSON.stringify({recipe,options,presetId});
   const currentKey=useRef(key);currentKey.current=key;
   const [render,setRender]=useState<{key:string;jobId:string;plan:Plan}>();
@@ -49,18 +50,19 @@ export function RenderedPreview({recipe,options,presetId,jobs,artifacts,allowed,
     finally{setCancelling(false);}
   };
   return <div className="rendered-preview-controls">
-    <button className="preview-video-button" disabled={!allowed} onClick={()=>void start()}>Render preview</button>
-    <small>Render and play the actual cuts, keyframe boundaries, effects and audio using the current export settings.</small>
-    <dialog className="rendered-preview-dialog" ref={dialog} onCancel={close} onClose={()=>{autoplay.current=false;video.current?.pause();setOpen(false);}} aria-labelledby="rendered-preview-title">
-      <div className="rendered-preview-heading"><h2 id="rendered-preview-title">Export preview</h2><button onClick={close}>Close preview</button></div>
+    {document.getElementById('editor-header-actions')&&createPortal(<button className="header-preview-button" aria-label="Render edited preview" disabled={!allowed||!dialogHost} onClick={()=>void start()}>Render preview</button>,document.getElementById('editor-header-actions')!)}
+    <button className="preview-video-button" disabled={!allowed||!dialogHost} onClick={()=>void start()}>Render preview</button>
+    <small>Render the edited video to check its cuts, text, image and audio.</small>
+    {dialogHost&&createPortal(<dialog className="rendered-preview-dialog" ref={dialog} onCancel={close} onClose={()=>{autoplay.current=false;video.current?.pause();setOpen(false);}} aria-label="Export preview">
+      <div className="rendered-preview-heading"><h2 id="rendered-preview-title">Rendered preview</h2><button onClick={close}>Close preview</button></div>
       <p>This renders the full edited video. It can take as long as an export; the completed file is also available in Library.</p>
       {stale&&<p role="status" className="notice">This render belongs to an earlier edit. {working?'Cancel it or wait for it to finish before previewing the current settings.':'Close it and preview again for your current settings.'}</p>}
       {preparing&&<p role="status">Preparing export preview…</p>}
-      {render&&<p>{(job?.plan||render.plan).strategy==='copy'?'Stream copy at resolved keyframes':'Exact re-encode'} · {(job?.plan||render.plan).encoder} · {(job?.plan||render.plan).duration.toFixed(3)} s</p>}
-      {working&&<><p role="status">Rendering preview · {job?.state||'queued'}{job?.message?` · ${job.message}`:''}</p><progress aria-label="Preview render progress" max={1} value={Math.min(1,Math.max(0,job?.progress||0))}/><div className="actions"><button disabled={cancelling||job?.state==='cancelling'} onClick={()=>void cancel()}>Cancel preview render</button></div><small>Closing this window keeps the render in Queue.</small></>}
+      {render&&<><p>Preview uses your current export settings. {(job?.plan||render.plan).duration.toFixed(3)} seconds.</p><details><summary>Processing details</summary><p>{(job?.plan||render.plan).strategy==='copy'?'Stream copy at resolved keyframes':'Exact re-encode'} · {(job?.plan||render.plan).encoder}</p></details></>}
+      {working&&<><p role="status">Rendering preview · {job?.state||'queued'}{job?.message?` · ${job.message}`:''}</p><progress aria-label="Preview render progress" max={1} value={Math.min(1,Math.max(0,job?.progress||0))}/><div className="actions"><button disabled={cancelling||job?.state==='cancelling'} onClick={()=>void cancel()}>Cancel preview render</button></div><small>Closing this window keeps processing in Jobs.</small></>}
       {job&&['failed','cancelled','interrupted'].includes(job.state)&&<p role="alert">Preview {job.state}{job.error?`: ${job.error}`:''}. No completed preview is available.</p>}
-      {output&&!stale&&open&&<><p>Validated output · {bytes(output.bytes)} · {output.media.duration.toFixed(3)} s</p><video key={output.id} ref={video} aria-label="Rendered export preview" controls preload="auto" src={contentUrl(output.id)} onCanPlay={()=>{if(autoplay.current)void play();}} onError={()=>setPlayError('This browser cannot play the rendered format. Download the actual file to inspect it in a compatible player.')}/><div className="actions"><button onClick={()=>void play()}>Play rendered video</button><a href={contentUrl(output.id)} download={output.name}>Download previewed file</a></div></>}
+      {output&&!stale&&open&&<><p>Rendered preview ready · {bytes(output.bytes)} · {output.media.duration.toFixed(3)} s</p><video key={output.id} ref={video} aria-label="Rendered export preview" controls preload="auto" src={contentUrl(output.id)} onCanPlay={()=>{if(autoplay.current)void play();}} onError={()=>setPlayError('This browser cannot play the rendered format. Download the actual file to inspect it in a compatible player.')}/><div className="actions"><button onClick={()=>void play()}>Play rendered video</button><a href={contentUrl(output.id)} download={output.name}>Download previewed file</a></div></>}
       {error&&<p role="alert" className="error">{error}</p>}{playError&&<p role="alert" className="error">{playError}</p>}
-    </dialog>
+    </dialog>,dialogHost)}
   </div>;
 }
