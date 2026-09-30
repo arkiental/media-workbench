@@ -1,0 +1,5 @@
+# Replace this hostname with an owned domain whose DNS points to this host.
+# Keep the application port private; only Caddy listens publicly.
+workbench.example.com {
+    reverse_proxy 127.0.0.1:4319
+}

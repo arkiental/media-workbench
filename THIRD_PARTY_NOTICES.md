@@ -1,0 +1,13 @@
+# Third-party and tool provenance
+
+The original application is MIT licensed. No LosslessCut, CompressO, or other application source was copied. Dependencies retain their licenses. package-lock.json records exact npm artifacts and integrity hashes. Electron, React, Fastify, esbuild, TypeScript, Zod and Node include their own notices; SQLite is public domain. Inspect transitive notices before distributing a release.
+
+`.tools/manifest.json` records SHA256, version and origin of each staged tool. `npm run tools:verify` checks bytes against it. yt-dlp 2026.08.19 was fetched from the official GitHub release and verified against the release SHA2-256SUMS; the standalone executable includes separately licensed dependencies. See https://github.com/yt-dlp/yt-dlp#license . JavaScript challenges use the explicitly staged Node runtime, with remote component retrieval disabled.
+
+The tested Windows FFmpeg is 9.0.1-full_build-www.gyan.dev with `--enable-gpl --enable-version3` and many optional libraries. It is a locally supplied binary, not an approved public bundle. Capture the exact `ffmpeg -buildconf` and acquire matching source, component notices and distribution compliance before redistribution. Builds containing `--enable-nonfree` must not be distributed. See https://www.ffmpeg.org/legal.html and https://github.com/FFmpeg/FFmpeg/blob/master/LICENSE.md . Merely running FFmpeg as a subprocess does not remove its distribution obligations.
+
+The packaging script creates an unsigned **personal local build** with tools copied from the user's installation. It is not authorization or a claim that this composition is ready for public redistribution. No release is signed, published or uploaded. Arial/DejaVu font files used for legacy text rendering come from the operating system.
+
+Playfair Display is bundled for matching interactive title editing and rendered exports. Source: https://github.com/google/fonts/tree/main/ofl/playfairdisplay . Copyright 2017 The Playfair Project Authors. Licensed under the SIL Open Font License 1.1; the license is retained in `apps/web/assets/fonts/OFL-PlayfairDisplay.txt` and copied to `dist/web/fonts` with the font.
+
+The Debian13x64 Linux package separately bundles DejaVu Sans, CA certificates, ELF dependencies and explicit Node/yt-dlp/FFmpeg tools. Its provenance directory retains component copyright files, Node/yt-dlp license text and the exact FFmpeg source/configuration. Its complete dependency source-distribution audit remains outstanding; see docs/LINUX_PACKAGE_EVIDENCE.md. Windows rendering uses the installed OS font, while Linux package rendering was tested with its bundled font.

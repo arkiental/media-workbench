@@ -1,0 +1,30 @@
+name: Deterministic media checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  linux-media:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.2'
+          cache: npm
+      - run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      - run: npm run build
+      - run: docker build --target test -t media-workbench:test .
+      - run: docker run --name media-workbench-ci --init --network none --cap-drop ALL --security-opt no-new-privileges --pids-limit 256 --memory 3g media-workbench:test
+      - name: Retain actual media evidence
+        if: always()
+        run: docker cp media-workbench-ci:/app/test-output ./ci-evidence
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-media-evidence
+          path: ci-evidence
+      - if: always()
+        run: docker rm -f media-workbench-ci

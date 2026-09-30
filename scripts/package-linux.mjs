@@ -1,0 +1,36 @@
+import {packager} from '@electron/packager';
+import {downloadArtifact} from '@electron/get';
+import {mkdir,mkdtemp,cp,copyFile,writeFile,readFile,chmod,readdir,realpath} from 'node:fs/promises';
+import {execFileSync} from 'node:child_process';
+import {createHash} from 'node:crypto';
+import path from 'node:path';
+
+if(process.platform!=='linux'||process.arch!=='x64')throw Error('Build Linux x64 inside the pinned Docker linux-package target');
+const staging=await mkdtemp('/app/test-output/linux-package-');
+for(const item of ['apps/desktop','dist','docs','deploy/README.md','deploy/LINUX_PACKAGE_README.md','LICENSE','THIRD_PARTY_NOTICES.md','README.md','SECURITY.md','CONTRIBUTING.md','toolchain.lock.json'])await cp(item,path.join(staging,item),{recursive:true});
+const pkg=JSON.parse(await readFile('package.json','utf8'));await writeFile(path.join(staging,'package.json'),JSON.stringify({name:pkg.name,version:pkg.version,main:'apps/desktop/main.cjs',type:'module',dependencies:pkg.dependencies}));
+await cp('node_modules',path.join(staging,'node_modules'),{recursive:true,filter:p=>!/[\\/](electron|@electron|playwright|playwright-core|typescript|tsx|esbuild|@esbuild)([\\/]|$)/.test(p)});
+const tools=path.join(staging,'.tools');await mkdir(path.join(tools,'bin'),{recursive:true});await mkdir(path.join(tools,'lib'));await mkdir(path.join(tools,'fonts'));
+const toolSources={node:'/usr/local/bin/node',ffmpeg:'/usr/bin/ffmpeg',ffprobe:'/usr/bin/ffprobe','yt-dlp':'/usr/local/bin/yt-dlp'};const librarySources=new Map();
+for(const [name,binary]of Object.entries(toolSources)){
+  await copyFile(binary,path.join(tools,'bin',name));await chmod(path.join(tools,'bin',name),0o755);
+  const listing=execFileSync('/usr/bin/ldd',[binary],{encoding:'utf8'});if(listing.includes('not found'))throw Error(`${name} has unresolved ELF dependencies`);
+  for(const line of listing.split('\n')){const match=/=> (\/\S+)/.exec(line)||/^\s*(\/\S+)/.exec(line);if(match)librarySources.set(path.basename(match[1]),await realpath(match[1]));}
+  // Debian 13's host ELF loader is required. Invoking ld.so directly changes
+  // process.execPath/PyInstaller self-resolution, so fixed wrappers exec real binaries.
+  const wrapper=`#!/bin/sh\nset -eu\nbase=$(CDPATH= cd -- "\${0%/*}" && pwd)\nexport LD_LIBRARY_PATH="$base/lib"\nexport MW_FONT="$base/fonts/DejaVuSans.ttf"\nexport SSL_CERT_FILE="$base/ca-certificates.crt"\nexport NODE_EXTRA_CA_CERTS="$base/ca-certificates.crt"\nexec "$base/bin/${name}" "$@"\n`;
+  await writeFile(path.join(tools,name),wrapper,{mode:0o755});
+}
+for(const [name,source]of librarySources)await copyFile(source,path.join(tools,'lib',name));
+await copyFile('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',path.join(tools,'fonts','DejaVuSans.ttf'));await copyFile('/etc/ssl/certs/ca-certificates.crt',path.join(tools,'ca-certificates.crt'));
+const provenance=path.join(staging,'provenance');await mkdir(provenance);await cp('/usr/local/share/media-workbench',path.join(provenance,'toolchain'),{recursive:true});await mkdir(path.join(provenance,'debian-copyright'));for(const name of await readdir('/usr/share/doc')){try{const copyright=await readFile(path.join('/usr/share/doc',name,'copyright'));await writeFile(path.join(provenance,'debian-copyright',name+'.txt'),copyright);}catch(error){if(error.code!=='ENOENT'&&error.code!=='ENOTDIR')throw error;}}
+for(const [name,url]of Object.entries({'Node-LICENSE':'https://raw.githubusercontent.com/nodejs/node/v22.23.2/LICENSE','yt-dlp-LICENSE':'https://raw.githubusercontent.com/yt-dlp/yt-dlp/2026.08.19/LICENSE'})){const response=await fetch(url);if(!response.ok)throw Error(`Cannot obtain official ${name}`);await writeFile(path.join(provenance,name),await response.text());}
+const electronVersion='44.3.0';const electronZip=await downloadArtifact({version:electronVersion,artifactName:'electron',platform:'linux',arch:'x64'});const electronHash=createHash('sha256').update(await readFile(electronZip)).digest('hex');
+const results=await packager({dir:staging,out:'/app/release',name:'Media Workbench',platform:'linux',arch:'x64',electronVersion,electronZipDir:path.dirname(electronZip),asar:false,overwrite:true,prune:true,executableName:'media-workbench',appCopyright:'MIT original application; separate native-tool/dependency licenses'});const bundle=results[0],bundledApp=path.join(bundle,'resources','app');
+await writeFile(path.join(bundle,'run-headless'),`#!/bin/sh\nset -eu\nbase=$(CDPATH= cd -- "\${0%/*}" && pwd)\ncd "$base/resources/app"\nexec ./.tools/node dist/server/main.js "$@"\n`,{mode:0o755});
+await copyFile('deploy/LINUX_PACKAGE_README.md',path.join(bundle,'LINUX_PACKAGE_README.md'));
+const files=[];async function inventory(dir,prefix=''){for(const item of await readdir(dir,{withFileTypes:true})){const full=path.join(dir,item.name),name=prefix+item.name;if(item.isDirectory())await inventory(full,name+'/');else if(item.isFile()){const bytes=await readFile(full);files.push({path:name,size:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')});}}}await inventory(path.join(bundledApp,'.tools'));
+const buildSources={};for(const source of ['package-lock.json','apps/server/src/app.ts','apps/server/src/main.ts','apps/server/src/worker.ts','apps/server/src/download.ts','apps/server/src/network.ts','apps/server/src/storage.ts','apps/web/src/main.tsx','apps/desktop/main.cjs','packages/contracts/src/index.ts','packages/jobs/src/queue.ts','packages/media/src/index.ts','packages/media/src/process.ts','dist/server/main.js','dist/web/main.js'])buildSources[source]=createHash('sha256').update(await readFile(source)).digest('hex');
+const manifest={schemaVersion:1,target:'Linux x64 Debian 13 (glibc 2.41 host ELF loader); desktop dependencies/display required separately',createdAt:new Date().toISOString(),node:'22.23.2',ffmpeg:'9.0.1',ytDlp:'2026.08.19',electron:{version:electronVersion,source:`https://github.com/electron/electron/releases/download/v${electronVersion}/electron-v${electronVersion}-linux-x64.zip`,sha256:electronHash,checksumVerification:'@electron/get official SHASUMS256.txt validation'},toolSources,librarySources:Object.fromEntries(librarySources),buildSources,files,distribution:'Unsigned personal local build. Original app MIT; native tools/libraries retain their licenses and corresponding-source obligations. Public redistribution is not approved.'};await writeFile(path.join(bundledApp,'provenance','linux-package.json'),JSON.stringify(manifest,null,2));
+async function readableDirectories(dir){await chmod(dir,0o755);for(const item of await readdir(dir,{withFileTypes:true}))if(item.isDirectory())await readableDirectories(path.join(dir,item.name));}await readableDirectories(bundle);
+const archive='/app/release/media-workbench-linux-x64-debian13.tar.gz';execFileSync('/usr/bin/tar',['-czf',archive,'-C',path.dirname(bundle),path.basename(bundle)]);const archiveBytes=await readFile(archive);await writeFile('/app/release/linux-package-evidence.json',JSON.stringify({...manifest,archive:{file:path.basename(archive),bytes:archiveBytes.length,sha256:createHash('sha256').update(archiveBytes).digest('hex')},folder:path.basename(bundle)},null,2));console.log(JSON.stringify({folder:bundle,archive,bytes:archiveBytes.length}));

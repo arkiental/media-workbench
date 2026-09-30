@@ -1,0 +1,11 @@
+node_modules
+.tools
+.data
+test-output
+dist
+release
+.git
+.codex
+*.log
+*.zip
+*.exe

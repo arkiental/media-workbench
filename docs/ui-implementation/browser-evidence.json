@@ -1,0 +1,55 @@
+{
+  "testedAt": "2026-09-18T01:39:25.019Z",
+  "platform": "win32",
+  "checks": [
+    "Authenticated browser session",
+    "Real yt-dlp inspection presents the returned entry formats",
+    "Post inspection exposes both videos and the browser selects item2",
+    "Inspected URL download reaches a validated artifact",
+    "Completed browser download is byte-identical to the selected second video",
+    "Raw file import persisted and opened original editor",
+    "All four sequential timeline thumbnails decode without auxiliary-limit failures",
+    "Actual imported MP4 decodes and advances playback",
+    "Indexed frame step loads real source frame",
+    "The active second region survives leaving and returning to Editor",
+    "Sidebar and timeline selection agree; I/O changes only selected region; invalid boundary rejected without moving other regions",
+    "Actual region preview starts at source in and stops at exclusive out without continuing",
+    "Add/remove and undo/redo keep selection valid; end-of-source addition disabled; typing does not trigger region shortcuts",
+    "Draft trim bounds, playhead, zoom and undo history survive Jobs navigation and page reload",
+    "Real validated proxy preserves source playhead; manual seek cancels bounded playback; original switching preserves time",
+    "Region sidebar reflows below playback at 390px without page overflow",
+    "Editor controls build cuts, crop, rotation, resize, timed text, captions, volume, fades and normalization",
+    "Reviewed exact plan submitted and validated export completed",
+    "Exported bytes obey 30,000-byte maximum and inspected metadata matches 160×100 transform",
+    "Submitted source regions match edited bounds; actual output fully decodes to eight frames",
+    "Export downloaded as real bytes and browser played validated artifact",
+    "Preview video renders current export settings and plays an actual validated file with identical decoded edited frames",
+    "Closing stops rendered playback; unchanged preview reuses the validated artifact without another export",
+    "Changing an edit renders a new artifact instead of replaying stale output",
+    "Project saved and loaded with source-time recipe",
+    "Named project and theme restore after reload; trim boundaries fit a 1366×768 viewport",
+    "Jobs screen reads real service state",
+    "Library screen reads real service state",
+    "Integrations screen reads real service state",
+    "Settings screen reads real service state",
+    "Administration screen reads real service state",
+    "Deleting terminal history through the UI retains the completed media artifact",
+    "Deleting an unreferenced managed imported copy through the UI retains external source bytes and other job history",
+    "Stream-copy preview plays the actual keyframe-snapped file and preserves every resolved source frame"
+  ],
+  "errors": [],
+  "artifactId": "0799ff6e-01fa-44cf-b0cc-788433d52792",
+  "bytes": 14019,
+  "layout": "B",
+  "sourceSegments": [
+    {
+      "in": 0.5,
+      "out": 0.8
+    },
+    {
+      "in": 1,
+      "out": 1.5
+    }
+  ],
+  "decodedFrames": 8
+}

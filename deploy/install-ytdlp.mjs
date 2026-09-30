@@ -1,0 +1,10 @@
+import { writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+const release='2026.08.19';
+const assets={amd64:{name:'yt-dlp_linux',sha256:'58162f9bfdc27458ea47bfcb311cf47028f17d8154a8bf7d689861d46399230a'},arm64:{name:'yt-dlp_linux_aarch64',sha256:'b16e4dab368a816cd05d477d698a605a6ae87ccee1c8ffd38fa21d7254141fcc'}};
+const asset=assets[process.argv[2]];if(!asset)throw Error('Only amd64 and arm64 Linux toolchain assets are configured');
+const url=`https://github.com/yt-dlp/yt-dlp/releases/download/${release}/${asset.name}`;
+const response=await fetch(url);if(!response.ok)throw Error(`Official yt-dlp download failed: ${response.status}`);
+const bytes=Buffer.from(await response.arrayBuffer());if(createHash('sha256').update(bytes).digest('hex')!==asset.sha256)throw Error('yt-dlp integrity mismatch');
+await writeFile('/usr/local/bin/yt-dlp',bytes,{mode:0o755});
+await writeFile('/usr/local/share/media-workbench/ytdlp.json',JSON.stringify({release,url,...asset,checksumSource:`https://github.com/yt-dlp/yt-dlp/releases/download/${release}/SHA2-256SUMS`},null,2));

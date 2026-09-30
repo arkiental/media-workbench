@@ -1,0 +1,15 @@
+<Configuration>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>C:\Users\Ark\Desktop\oss\release\Media Workbench-win32-x64</HostFolder>
+      <SandboxFolder>C:\WorkbenchPackage</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>C:\Users\Ark\Desktop\oss\test-output\desktop-sandbox-files</HostFolder>
+      <SandboxFolder>C:\TestFiles</SandboxFolder>
+      <ReadOnly>false</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+  <LogonCommand><Command>powershell.exe -NoProfile -Command &quot;Copy-Item -LiteralPath 'C:\WorkbenchPackage' -Destination 'C:\MediaWorkbench' -Recurse; Start-Process -FilePath 'C:\MediaWorkbench\media-workbench.exe' -WorkingDirectory 'C:\MediaWorkbench'&quot;</Command></LogonCommand>
+</Configuration>

@@ -1,0 +1,9 @@
+# Architecture decision — 2026-09-12
+
+Retain TypeScript, React, standalone Fastify, SQLite, subprocess FFmpeg/ffprobe/yt-dlp, and a thin Electron shell. Node 22.23.2 is installed and its built-in SQLite API passed a real database query. Use node:sqlite to avoid a separate native addon ABI between Node and Electron; the service runs in a standalone Node process. Browser builds use esbuild, avoiding an additional development server and cross-origin auth configuration. Exact dependency versions are resolved in package-lock.json.
+
+Ownership: contracts are shared; media owns probing/planning/execution only; jobs owns durable state; server owns authentication/policy/HTTP and storage; web owns presentation; desktop owns local IPC/actions. Recipes reference immutable original source IDs. Source time is normalized to format start time; intervals are in-inclusive/out-exclusive. Crop uses encoded/unrotated source pixels, then source display rotation, recipe rotation, resize, and overlays. Captions use source time and are mapped through kept segments. Replacement audio starts at output time zero, is padded with silence or trimmed to output duration.
+
+The service is the single database/worker owner. Local mode uses explicit token pairing and loopback/Host/Origin enforcement. Network hosting fails closed without explicit worker-image, mandatory socket proxy, HTTPS-origin and owner-credential configuration. Every shared native operation uses an isolated Linux worker; presentation and media contracts remain independent of Docker/Electron. No telemetry. Experimental smart cutting is disabled.
+
+Primary references checked at build start: https://fastify.dev/docs/latest/Reference/Server/ ; https://nodejs.org/api/sqlite.html ; https://www.electronjs.org/docs/latest/tutorial/security ; https://github.com/yt-dlp/yt-dlp ; https://ffmpeg.org/ffmpeg.html .

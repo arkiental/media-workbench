@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "node": "22.23.2",
+  "electron": "44.3.0",
+  "ytDlpTag": "2026.08.19",
+  "windowsYtDlpSha256": "66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a",
+  "ytDlpSource": "https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp.exe",
+  "ffmpeg": "User-supplied; tested Windows 9.0.1-full_build-www.gyan.dev. See .tools/manifest.json for exact local hashes. No public distribution approved."
+}
