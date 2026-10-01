@@ -5,7 +5,7 @@ import { runProcess } from '../../../packages/media/src/process.ts';
 import { createEgressProxy, validateDestination } from './network.ts';
 export type DownloadContext = ExecutionContext & { policy:Policy; testOrigin?:string; cookieFile?:string; browserCookie?:{browser:string;profile?:string} };
 const INSPECTION_LIMIT=100;
-function args(tools:ToolPaths,proxy:string,ctx:DownloadContext,selection='1'){return ['--ignore-config','--no-plugin-dirs','--no-playlist','--playlist-items',selection,'--lazy-playlist','--no-warnings','--no-check-formats','--no-call-home','--no-progress','--no-remote-components','--proxy',proxy,'--socket-timeout','20','--retries','2','--fragment-retries','2','--restrict-filenames','--no-cache-dir','--js-runtimes',`node:${tools.node||process.execPath}`,'--ffmpeg-location',path.dirname(tools.ffmpeg),...(ctx.cookieFile?['--cookies',ctx.cookieFile]:[]),...(ctx.browserCookie?['--cookies-from-browser',ctx.browserCookie.browser+(ctx.browserCookie.profile?':'+ctx.browserCookie.profile:'')]:[])];}
+function args(tools:ToolPaths,proxy:string,ctx:DownloadContext,selection='1'){return ['--ignore-config','--no-plugin-dirs','--no-playlist','--playlist-items',selection,'--lazy-playlist','--no-check-formats','--no-progress','--no-remote-components','--proxy',proxy,'--socket-timeout','20','--retries','2','--fragment-retries','2','--restrict-filenames','--no-cache-dir','--js-runtimes',`node:${tools.node||process.execPath}`,...(tools.ffmpeg===path.basename(tools.ffmpeg)?[]:['--ffmpeg-location',path.resolve(tools.ffmpeg)]),...(ctx.cookieFile?['--cookies',ctx.cookieFile]:[]),...(ctx.browserCookie?['--cookies-from-browser',ctx.browserCookie.browser+(ctx.browserCookie.profile?':'+ctx.browserCookie.profile:'')]:[])];}
 async function metadata(request:DownloadRequest,tools:ToolPaths,ctx:DownloadContext,proxy:string,selection:string){
  const result=await runProcess(tools.ytdlp,[...args(tools,proxy,ctx,selection),'--dump-single-json','--skip-download','--',request.url],ctx,{maxStdoutBytes:8*1024*1024});
  return JSON.parse(result.stdout.toString());
@@ -31,10 +31,24 @@ export async function downloadMedia(request:DownloadRequest,tools:ToolPaths,ctx:
   // A direct-video URL ignores --playlist-items. Confirm a nondefault collection
   // selection exists before allowing it to download an unintended direct video.
   if(itemIndex>1){const data=await metadata(request,tools,ctx,proxy.url,String(itemIndex));if(!Array.isArray(data.entries)||data.entries.filter(Boolean).length!==1||data.entries[0].playlist_index!==itemIndex)throw Error('Selected media item is unavailable; inspect the post again');}
-  ctx.onStage?.('downloading');
-  await runProcess(tools.ytdlp,[...args(tools,proxy.url,ctx,String(itemIndex)),'--max-filesize',String(ctx.policy.maxInputBytes),'--downloader','native','--hls-prefer-native','--merge-output-format','mkv','-f',format,'-o',path.join(ctx.workDir,'download.%(ext)s'),'--',request.url],ctx);
+  ctx.onStage?.('downloading');ctx.onProgress?.(0,'Connecting and checking available media');
+  const streams=new Map<string,{downloaded:number;total:number}>();let lastProgress=0;
+  const onOutputLine=(line:string)=>{
+   if(line.startsWith('MW_DOWNLOAD:')){
+    const [id,downloadedText,totalText,estimateText,status]=line.slice('MW_DOWNLOAD:'.length).split('|');const downloaded=Number(downloadedText),known=Number(totalText),estimated=Number(estimateText),total=Number.isFinite(known)&&known>0?known:Number.isFinite(estimated)&&estimated>0?estimated:0;
+    if(!id||!Number.isFinite(downloaded)||downloaded<0||!['downloading','finished'].includes(status))return;
+    streams.set(id,{downloaded,total:status==='finished'?downloaded:total});const received=[...streams.values()].reduce((sum,item)=>sum+item.downloaded,0),expected=[...streams.values()].reduce((sum,item)=>sum+item.total,0);
+    lastProgress=expected>0?Math.min(.98,received/expected):0;
+    ctx.onProgress?.(lastProgress,status==='finished'?'Download stream received; preparing the file':`Downloading: ${(received/1024**2).toFixed(1)} MB received${total?totalText==='NA'?' (estimated size)':'':''}`);
+   }else if(line.startsWith('MW_POSTPROCESS:')){ctx.onStage?.('processing');ctx.onProgress?.(lastProgress,'Preparing the downloaded file');}
+  };
+  const toolResult=await runProcess(tools.ytdlp,[...args(tools,proxy.url,ctx,String(itemIndex)),'--progress','--newline','--progress-delta','0.25','--progress-template','download:MW_DOWNLOAD:%(info.format_id)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.status)s','--progress-template','postprocess:MW_POSTPROCESS:%(progress.status)s','--max-filesize',String(ctx.policy.maxInputBytes),'--downloader','native','--hls-prefer-native','--merge-output-format','mkv','-f',format,'-o',path.join(ctx.workDir,'download.%(ext)s'),'--',request.url],ctx,{onOutputLine});
   if(proxy.violation)throw Error(proxy.violation);
-  const files=(await readdir(ctx.workDir)).filter(f=>/^download\.[a-zA-Z0-9]{1,8}$/.test(f));if(files.length!==1)throw Error('Downloader did not produce a single complete media file; inspect formats or authentication');
+  const files=(await readdir(ctx.workDir)).filter(f=>/^download\.[a-zA-Z0-9]{1,8}$/.test(f));if(files.length!==1){
+   const diagnostics=(toolResult.stderr+'\n'+toolResult.stdout.toString()).split(/\r?\n/).filter(line=>line.trim()&&!line.startsWith('MW_')).slice(-8).join('\n');
+   if(/larger than|bigger than|max.file.?size|size.*limit/i.test(diagnostics))throw Error('Download was skipped because the selected media exceeds the file size limit. Choose a smaller format.');
+   throw Error('Downloader did not produce a single complete media file.'+(diagnostics?' '+redactError(diagnostics):' Inspect the selected format and try again.'));
+  }
   const result=path.join(ctx.workDir,files[0]);if((await stat(result)).size>ctx.policy.maxInputBytes)throw Error('Downloaded file exceeds policy');return {path:result,name:files[0]};
  }catch(e){throw Error(redactError(e));}finally{proxy.close();}
 }

@@ -16,6 +16,7 @@
     "desktop": "electron apps/desktop/main.cjs",
     "tools:setup": "node scripts/setup-tools.mjs",
     "test:ui": "tsx tests/browser.smoke.ts",
+    "test:responsive": "tsx tests/ui-responsive.smoke.ts",
     "tools:verify": "node scripts/verify-tools.mjs",
     "tools:update": "node scripts/update-ytdlp.mjs",
     "tools:rollback": "node scripts/update-ytdlp.mjs --rollback",

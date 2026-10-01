@@ -2,7 +2,7 @@
 
 A local-first media downloader and single-source clip editor. The name is provisional. The implementation has real yt-dlp, FFmpeg and ffprobe execution, SQLite jobs, a React browser interface and an Electron desktop shell. See [implementation evidence](docs/IMPLEMENTATION_STATUS.md) and [independent review](docs/INDEPENDENT_REVIEW.md) for exactly what is verified. This is a development build, not a completed public stable release.
 
-The current source UI uses **Library / Editor / Jobs**, with **Add media** for imports and URLs. The editor has a vertical tool rail, selectable canvas titles, a contextual inspector, and Text / Video / Audio timeline tracks. Text styles persist and render in actual exports. **Export…** opens the reviewed export flow; **Render preview** is in the viewer's More menu. Cut and Project are in the tool rail's More menu. Saved projects are in Library. Appearance, presets, integrations and administration are under Settings. Valid drafts recover on navigation/reload within the same browser origin; save a named project to pin its source dependencies. See the [contextual editor changes, critic review, and validation](docs/CONTEXTUAL_EDITOR_RESULTS.md). Existing release binaries must be rebuilt to receive this UI.
+The current source UI opens in **Editor**, with **Library / Editor / Jobs** navigation and **Add media** for files and URLs. The editor has a labeled tool rail, contextual inspector, original-source preview, export summary, and Text / Video / Audio timeline tracks. On mobile, full-width preview and timeline sit above touch controls and a focused editing panel, with navigation at the bottom. Text styles persist and render in actual exports. **Review export** opens the reviewed export flow; **Render preview** creates a playable file with the current edits. Cut and Project remain available in the tool rail. Saved projects are in Library. Appearance, presets, integrations and administration are under Settings. Valid drafts recover on navigation/reload within the same browser origin; save a named project to pin its source dependencies. See the [concept 1 interface and validation](docs/CONCEPT_ONE_UI.md). Existing release binaries must be rebuilt to receive this UI.
 
 ## Run on Windows
 
@@ -30,6 +30,7 @@ Browser users download files. Windows desktop copy-file creates native file-tran
 npm run fixtures
 npm test
 npm run test:ui
+npm run test:responsive
 npm run package:desktop
 ```
 

@@ -21,13 +21,14 @@ function BoundaryInput({label,value,commit}:{label:string;value:number;commit:(v
     const seconds=parts.reduce((total,part)=>total*60+Number(part),0);
     if(!valid||!commit(seconds))setText(stamp(value));else setText(stamp(seconds));
   };
-  return <input aria-label={label} title="Enter hours:minutes:seconds.milliseconds or seconds" type="text" spellCheck={false} value={text}
+  return <input aria-label={label} title="Enter hours:minutes:seconds.milliseconds or seconds" type="text" inputMode="decimal" spellCheck={false} value={text}
     onChange={e=>setText(e.target.value)} onBlur={apply}
     onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();e.currentTarget.blur();}if(e.key==='Escape'){e.preventDefault();setText(stamp(value));}}}/>;
 }
 
 type Props={
   viewerActions:React.ReactNode;
+  exportSummary:React.ReactNode;
   tool:string;setTool:(tool:string)=>void;selectedText:number;selectText:(index:number)=>void;sourceName:string;mediaWidth:number;mediaHeight:number;frameRate?:string;
   workspace:WorkspaceState;setWorkspace:(state:WorkspaceState)=>void;inspector?:React.ReactNode;
   pauseSignal:number;sourceId:string;previewId:string;duration:number;recipe:Recipe;change:(recipe:Recipe)=>void;
@@ -36,7 +37,7 @@ type Props={
   run:(work:()=>Promise<unknown>)=>Promise<void>;
 };
 
-export function CutWorkspace({viewerActions,tool,setTool,selectedText,selectText,sourceName,mediaWidth,mediaHeight,frameRate,workspace,setWorkspace,inspector,pauseSignal,sourceId,previewId,duration,recipe,change,time,setTime,wave,thumbnails,canUndo,canRedo,undo,redo,run}:Props) {
+export function CutWorkspace({viewerActions,exportSummary,tool,setTool,selectedText,selectText,sourceName,mediaWidth,mediaHeight,frameRate,workspace,setWorkspace,inspector,pauseSignal,sourceId,previewId,duration,recipe,change,time,setTime,wave,thumbnails,canUndo,canRedo,undo,redo,run}:Props) {
   const {selected,zoom,snap}=workspace;
   const wavePeak=Math.max(.001,...wave.map(Math.abs));
   const fit=workspace.viewerFit||'fit',setFit=(value:string)=>setWorkspace({...workspace,viewerFit:value as 'fit'|'fill'});
@@ -46,7 +47,35 @@ export function CutWorkspace({viewerActions,tool,setTool,selectedText,selectText
   const [muted,setMuted]=useState(false),[volume,setVolume]=useState(1);
   const [playing,setPlaying]=useState(false),[previewing,setPreviewing]=useState(false),[ready,setReady]=useState(false);
   const [inspectFrame,setInspectFrame]=useState<number>(),[error,setError]=useState(''),[message,setMessage]=useState('');
+  const [panelOpen,setPanelOpen]=useState(true),[trimDrag,setTrimDrag]=useState<{index:number;edge:'in'|'out';value:number}>();
+  const [panelRevealRevision,setPanelRevealRevision]=useState(0);
+  const toolRail=useRef<HTMLElement>(null),contextPanel=useRef<HTMLDivElement>(null),revealFrame=useRef(0);
+  const openTool=(value:string)=>{setTool(value);setPanelOpen(true);};
+  const openText=(index:number)=>{selectText(index);setPanelOpen(true);};
   const video=useRef<HTMLVideoElement>(null),position=useRef(time),generation=useRef(0),previewEnd=useRef<number|undefined>(undefined),expectedSeek=useRef<number|undefined>(undefined);
+  const activateRailTool=(value:string)=>{
+    openTool(value);
+    if(window.matchMedia('(max-width:850px)').matches){
+      toolRail.current?.querySelector('details')?.removeAttribute('open');
+      setPanelRevealRevision(revision=>revision+1);
+    }
+  };
+  const closePanel=()=>{
+    setPanelOpen(false);
+    const selected=Array.from(toolRail.current?.querySelectorAll<HTMLButtonElement>('button[aria-pressed="true"]')||[]).find(button=>button.offsetWidth>0&&button.offsetHeight>0);
+    const focusTarget=selected||toolRail.current?.querySelector<HTMLElement>('.more-editor-tools>summary');
+    focusTarget?.focus({preventScroll:true});
+    if(window.matchMedia('(max-width:850px)').matches){
+      cancelAnimationFrame(revealFrame.current);
+      revealFrame.current=requestAnimationFrame(()=>video.current?.closest('.cut-player')?.scrollIntoView({block:'start',behavior:'auto'}));
+    }
+  };
+  useEffect(()=>{
+    if(!panelRevealRevision||!window.matchMedia('(max-width:850px)').matches)return;
+    revealFrame.current=requestAnimationFrame(()=>contextPanel.current?.scrollIntoView({block:'start',behavior:'auto'}));
+    return()=>cancelAnimationFrame(revealFrame.current);
+  },[panelRevealRevision]);
+  useEffect(()=>()=>cancelAnimationFrame(revealFrame.current),[]);
   const cache=useRef(new Map<number,{pts:number;keyframe:boolean}[]>());
   const active=Math.min(selected,recipe.segments.length-1),region=recipe.segments[active];
   const reportTime=(value:number)=>{position.current=value;setTime(value);};
@@ -141,7 +170,32 @@ export function CutWorkspace({viewerActions,tool,setTool,selectedText,selectText
     change({...recipe,segments:recipe.segments.flatMap((s,i)=>i===active?[{...s,out:at},{...s,in:at}]:[s])});
     setMessage(`Region ${active+1} split at ${stamp(at)}.`);
   };
-  return <div className={`cut-workspace tool-${tool.toLowerCase()}`} onKeyDown={e=>{
+  const commitTrim=(index:number,edge:'in'|'out',value:number)=>{
+    const segment=recipe.segments[index];
+    if(!segment||!Number.isFinite(value)||value<0||value>duration||(edge==='in'?value>=segment.out:value<=segment.in))return;
+    if(segment[edge]===value)return;
+    generation.current++;pause();setError('');
+    change({...recipe,segments:recipe.segments.map((s,i)=>i===index?{...s,[edge]:value}:s)});
+    setMessage(`Region ${index+1}: ${edge==='in'?'start':'end'} set to ${stamp(value)}`);
+  };
+  const beginTrim=(event:React.PointerEvent<HTMLButtonElement>,index:number,edge:'in'|'out')=>{
+    if(event.button!==0)return;
+    event.preventDefault();event.stopPropagation();select(index);openTool('Cut');
+    const target=event.currentTarget,rect=target.closest('.timeline-media')!.getBoundingClientRect(),segment=recipe.segments[index];
+    let value=segment[edge];target.setPointerCapture(event.pointerId);
+    const move=(pointer:PointerEvent)=>{
+      const at=Math.round((pointer.clientX-rect.left)/rect.width*duration*1000)/1000;
+      value=edge==='in'?Math.max(0,Math.min(segment.out-.001,at)):Math.min(duration,Math.max(segment.in+.001,at));
+      setTrimDrag({index,edge,value});
+    };
+    const clean=()=>{target.removeEventListener('pointermove',move);target.removeEventListener('pointerup',finish);target.removeEventListener('pointercancel',cancel);setTrimDrag(undefined);};
+    const finish=()=>{clean();commitTrim(index,edge,value);};
+    const cancel=()=>clean();
+    target.addEventListener('pointermove',move);target.addEventListener('pointerup',finish);target.addEventListener('pointercancel',cancel);
+  };
+  const totalKept=recipe.segments.reduce((n,s)=>n+s.out-s.in,0);
+  const rulerDivisions=Math.min(8,Math.max(2,Math.ceil(duration/5)));
+  return <div className={`cut-workspace tool-${tool.toLowerCase()}${panelOpen?' is-panel-open':''}`} onKeyDown={e=>{
     const target=e.target as HTMLElement;
     if((e.ctrlKey||e.metaKey)&&!target.closest('input,textarea,select,[contenteditable="true"]')){
       if(e.key.toLowerCase()==='z'){e.preventDefault();if(e.shiftKey?canRedo:canUndo)history(e.shiftKey?redo:undo);}
@@ -153,12 +207,27 @@ export function CutWorkspace({viewerActions,tool,setTool,selectedText,selectText
     if(e.code==='Space'&&!target.closest('button')){e.preventDefault();void run(togglePlay);}
   }}>
     <div className="cut-layout">
-      <nav className="editor-tool-rail" aria-label="Editing tools">
-        {[['Source','Media','media'],['Text','Text','text'],['Audio','Audio','audio'],['Transform','Transform','transform']].map(([value,label,icon])=><button key={value} title={label} aria-pressed={tool===value} onClick={()=>setTool(value)}><EditorIcon name={icon}/><span>{label}</span></button>)}
-        <details className="more-editor-tools"><summary aria-label="More editing tools"><EditorIcon name="more"/></summary><button onClick={()=>setTool('Cut')} aria-pressed={tool==='Cut'}><EditorIcon name="cut"/>Cut</button><button onClick={()=>setTool('Project')}>Project</button></details>
+      <nav ref={toolRail} className="editor-tool-rail" aria-label="Editing tools">
+        <button className="mobile-trim-tool" aria-label="Trim" aria-pressed={tool==='Cut'} onClick={()=>activateRailTool('Cut')}><EditorIcon name="cut"/><span>Trim</span></button>
+        {[['Source','Media','media'],['Text','Text','text'],['Audio','Audio','audio'],['Transform','Transform','transform']].map(([value,label,icon])=><button className={value==='Source'?'media-tool':undefined} key={value} title={label} aria-label={label} aria-pressed={tool===value} onClick={()=>activateRailTool(value)}><EditorIcon name={icon}/><span className={value==='Transform'?'desktop-tool-label':undefined}>{label}</span>{value==='Transform'&&<span className="mobile-tool-label">Crop</span>}</button>)}
+        <details className="more-editor-tools"><summary aria-label="More editing tools"><EditorIcon name="more"/><span>More</span></summary><div className="more-tools-menu"><button onClick={()=>activateRailTool('Cut')} aria-pressed={tool==='Cut'}><EditorIcon name="cut"/>Cut</button><button className="mobile-media-tool" onClick={()=>activateRailTool('Source')}><EditorIcon name="media"/>Media</button><button onClick={()=>activateRailTool('Project')}>Project</button></div></details>
       </nav>
-      <div className="cut-player"><div className="source-heading"><h1 aria-label={`Editor · ${sourceName}`}>{sourceName}</h1><span>{mediaWidth} × {mediaHeight} · {frameRate?Math.round(frameRate.split('/').reduce((a,n,i)=>i?a/Number(n):Number(n),0)*100)/100:24} fps · {stamp(duration)}{(recipe.crop||recipe.rotate||recipe.resize)&&<span className="source-preview-label"> · Source preview — render to review transforms</span>}</span></div>
-        <div className="cut-preview" onClick={()=>setTool('Transform')}>
+      <div ref={contextPanel} className="editor-context-panel"><div className="context-panel-heading"><span>{tool==='Cut'?`Trim section ${active+1}`:tool==='Source'?'Media':tool}</span><button className="context-panel-close" onClick={closePanel}>Done</button></div>
+        {inspector||<aside className="region-sidebar" aria-label="Kept regions">
+          <div className="region-heading"><h3>Kept sections</h3><span>{recipe.segments.length}</span></div>
+          <p className="muted">Sections export in this order.</p>
+          <div className="region-list">{recipe.segments.map((s,i)=><button key={i} className="region-choice" aria-label={`Select region ${i+1}`} aria-pressed={active===i} onClick={()=>select(i)}><strong>Section {i+1}</strong><span>{stamp(s.in)} to {stamp(s.out)}</span><small>{(s.out-s.in).toFixed(3)} s{active===i?' · selected':''}</small></button>)}</div>
+          <div className="region-edit" aria-label={`Editing region ${active+1}`}>
+            <div className="compact-boundary"><span>Start</span><BoundaryInput key={`in-${active}`} label={`Region ${active+1} in timecode`} value={region.in} commit={value=>setBoundary('in',value)}/><button className="mark-button" aria-label="Set start I" title="Set start at playhead (I)" aria-keyshortcuts="I" onClick={()=>mark('in')}><span className="mobile-tool-label">Use playhead</span><kbd>I</kbd></button></div>
+            <div className="compact-boundary"><span>End</span><BoundaryInput key={`out-${active}`} label={`Region ${active+1} out timecode`} value={region.out} commit={value=>setBoundary('out',value)}/><button className="mark-button" aria-label="Set end O" title="Set end at playhead (O)" aria-keyshortcuts="O" onClick={()=>mark('out')}><span className="mobile-tool-label">Use playhead</span><kbd>O</kbd></button></div>
+          </div>
+          <div className="actions"><button aria-label="+ New region" disabled={time>=duration} onClick={add}>Add section</button><button aria-label="Remove region" disabled={recipe.segments.length===1} onClick={remove}>Remove section</button></div>
+          <small>{totalKept.toFixed(3)} seconds kept</small>
+        </aside>}
+      </div>
+      <div className="cut-player"><div className="source-heading"><h1 aria-label={`Editor · ${sourceName}`}>{sourceName}</h1><span>{mediaWidth} × {mediaHeight}{frameRate?` · ${Math.round(frameRate.split('/').reduce((a,n,i)=>i?a/Number(n):Number(n),0)*100)/100} fps`:''}</span></div>
+        <div className="preview-heading"><strong>Original preview</strong><span>{stamp(time)} / {stamp(duration)}</span></div>
+        <div className="cut-preview" onClick={()=>openTool('Transform')}>
           <video style={{objectFit:fit==='fill'?'cover':'contain'}} ref={video} muted={muted} src={contentUrl(previewId)} preload="metadata" aria-label="Source playback"
             onLoadedMetadata={()=>{setElementTime(Math.max(0,Math.min(duration,position.current)));setReady(true);}}
             onLoadedData={()=>setError('')}
@@ -169,23 +238,18 @@ export function CutWorkspace({viewerActions,tool,setTool,selectedText,selectText
             onTimeUpdate={e=>{if(e.currentTarget.readyState>=1&&!e.currentTarget.seeking)reportTime(e.currentTarget.currentTime);}}
             onError={()=>{setReady(false);setPlaying(false);stopPreview();setError('This browser could not decode the preview. Generate and select a playback proxy below.');}}/>
           {inspectFrame!==undefined&&<img className="cut-frame" src={`/api/v1/sources/${sourceId}/frame?pts=${inspectFrame}`} alt={`Source decoded frame at ${inspectFrame.toFixed(6)} seconds`}/>}
-          <CanvasText recipe={recipe} time={time} selected={selectedText} active={tool==='Text'} select={selectText} change={change} width={mediaWidth} height={mediaHeight} fit={fit}/>
+          <CanvasText recipe={recipe} time={time} selected={selectedText} active={tool==='Text'} select={openText} change={change} width={mediaWidth} height={mediaHeight} fit={fit}/>
         </div>
         {inspectFrame!==undefined&&<small>Decoded original frame · {inspectFrame.toFixed(6)} s</small>}
         <div className="cut-transport">
           <div className="transport-time"><output aria-label="Current source time">{stamp(time)}</output><span> / {stamp(duration)}</span></div>
-          <div className="transport-buttons"><button title="Previous frame" aria-label="Previous frame" onClick={()=>void run(()=>step(-1))}><EditorIcon name="previous"/></button><button className="transport-play" title={playing?'Pause':'Play'} aria-label={playing?'Pause':'Play'} disabled={!ready} onClick={()=>void run(togglePlay)}><EditorIcon name={playing?'pause':'play'}/></button><button title="Next frame" aria-label="Next frame" onClick={()=>void run(()=>step(1))}><EditorIcon name="next"/></button></div>
+          <div className="transport-buttons"><button title="Previous frame" aria-label="Previous frame" onClick={()=>void run(()=>step(-1))}><EditorIcon name="previous"/><span>Previous</span></button><button className="transport-play" title={playing?'Pause':'Play'} aria-label={playing?'Pause':'Play'} disabled={!ready} onClick={()=>void run(togglePlay)}><EditorIcon name={playing?'pause':'play'}/><span>{playing?'Pause':'Play'}</span></button><button title="Next frame" aria-label="Next frame" onClick={()=>void run(()=>step(1))}><EditorIcon name="next"/><span>Next</span></button></div>
           <div className="transport-view"><select aria-label="Viewer fit" value={fit} onChange={e=>setFit(e.target.value)}><option value="fit">Fit</option><option value="fill">Fill</option></select><button title="Fullscreen" aria-label="Fullscreen" onClick={()=>void run(async()=>{if(document.fullscreenElement)await document.exitFullscreen();else await video.current?.closest('.cut-player')?.requestFullscreen();})}><EditorIcon name="fullscreen"/></button></div>
         </div>
-        <details className="cut-precision"><summary>Frame inspection and playback</summary>{viewerActions}<button aria-pressed={muted} onClick={()=>setMuted(!muted)}>{muted?'Unmute':'Mute'}</button><label className="playback-volume">Playback volume<input aria-label="Playback volume" type="range" min={0} max={1} step={.05} value={volume} onChange={e=>{const value=Number(e.target.value);setVolume(value);if(video.current)video.current.volume=value;}}/></label><div className="actions"><button onClick={()=>void run(()=>step(-1,true))}>Previous keyframe</button><button onClick={()=>void run(()=>step(1,true))}>Next keyframe</button><button onClick={()=>void run(()=>seek(cursor(),true))}>Inspect source frame</button></div></details>
+        <small className="original-preview-note">Render a preview to check the final cuts, picture and sound.</small>
+        <details className="cut-precision"><summary>Preview and playback options</summary>{viewerActions}<button aria-pressed={muted} onClick={()=>setMuted(!muted)}>{muted?'Unmute':'Mute'}</button><label className="playback-volume">Playback volume<input aria-label="Playback volume" type="range" min={0} max={1} step={.05} value={volume} onChange={e=>{const value=Number(e.target.value);setVolume(value);if(video.current)video.current.volume=value;}}/></label><div className="actions"><button onClick={()=>void run(()=>step(-1,true))}>Previous keyframe</button><button onClick={()=>void run(()=>step(1,true))}>Next keyframe</button><button onClick={()=>void run(()=>seek(cursor(),true))}>Inspect source frame</button></div></details>
       </div>
-      {inspector||<aside className="region-sidebar" aria-label="Kept regions">
-        <div className="region-heading"><h3>Keep regions</h3><span>{recipe.segments.length}</span></div>
-        <p className="muted">Exported in the order shown.</p>
-        <div className="region-list">{recipe.segments.map((s,i)=><button key={i} className="region-choice" aria-label={`Select region ${i+1}`} aria-pressed={active===i} onClick={()=>select(i)}><strong>Region {i+1}</strong><span>{stamp(s.in)} → {stamp(s.out)}</span><small>{(s.out-s.in).toFixed(3)} s{active===i?' · editing':''}</small></button>)}</div>
-        <div className="actions"><button disabled={time>=duration} onClick={add}>+ New region</button><button disabled={recipe.segments.length===1} onClick={remove}>Remove region</button></div>
-        <small>Total kept: {recipe.segments.reduce((n,s)=>n+s.out-s.in,0).toFixed(3)} s</small>
-      </aside>}
+      <aside className="editor-export-summary" aria-label="Export summary">{exportSummary}</aside>
     </div>
     <div className="compact-timeline-toolbar" role="group" aria-label="Timeline controls">
       <div className="timeline-tool-group history-tools">
@@ -193,12 +257,10 @@ export function CutWorkspace({viewerActions,tool,setTool,selectedText,selectText
         <button aria-label="Redo" title="Redo (Ctrl+Shift+Z)" disabled={!canRedo} onClick={()=>history(redo)}><EditorIcon name="redo"/><span>Redo</span></button>
       </div>
       <div className="timeline-tool-group">
+        <button aria-label="Trim selected section" title="Trim selected section" onClick={()=>openTool('Cut')}><EditorIcon name="cut"/><span>Trim</span></button>
+        <button aria-label="Remove selected section" disabled={recipe.segments.length===1} onClick={remove}><EditorIcon name="trash"/><span>Remove</span></button>
         <button title="Split selected region at playhead" disabled={time<=region.in||time>=region.out} onClick={split}><EditorIcon name="cut"/><span>Split</span></button>
         <button className="snap-toggle" title="Snap to indexed frame timestamps" aria-pressed={snap} onClick={()=>setSnap(!snap)}><EditorIcon name="snap"/><span>Snap</span><i aria-hidden="true"/></button>
-      </div>
-      <div className="timeline-tool-group region-edit" aria-label={`Editing region ${active+1}`}>
-        <div className="compact-boundary"><span>In</span><BoundaryInput key={`in-${active}`} label={`Region ${active+1} in timecode`} value={region.in} commit={value=>setBoundary('in',value)}/><button className="mark-button" aria-label="Set start I" title="Set start at playhead (I)" aria-keyshortcuts="I" onClick={()=>mark('in')}><kbd>I</kbd></button></div>
-        <div className="compact-boundary"><span>Out</span><BoundaryInput key={`out-${active}`} label={`Region ${active+1} out timecode`} value={region.out} commit={value=>setBoundary('out',value)}/><button className="mark-button" aria-label="Set end O" title="Set end at playhead (O)" aria-keyshortcuts="O" onClick={()=>mark('out')}><kbd>O</kbd></button></div>
       </div>
       <div className="timeline-tool-group region-play-tools"><button className="region-play" aria-label={previewing?'Stop source region':'Play source region'} disabled={!ready} onClick={()=>void run(previewing?async()=>pause():playRegion)}><EditorIcon name={previewing?'pause':'play'}/><span>{previewing?'Stop region':'Play region'}</span></button>
         <details className="timeline-more"><summary aria-label="More timeline actions" title="More timeline actions"><EditorIcon name="more"/></summary><div><button onClick={()=>void run(()=>seek(region.in))}>Go to start</button><button onClick={()=>void run(()=>seek(region.out))}>Go to end</button><label>Playhead (s)<input aria-label="Playhead (s)" type="number" min={0} max={duration} step="any" value={time} onChange={e=>void run(()=>seek(Number(e.target.value)))}/></label></div></details>
@@ -206,19 +268,22 @@ export function CutWorkspace({viewerActions,tool,setTool,selectedText,selectText
       <div className="timeline-tool-group timeline-zoom"><span>Zoom</span><button aria-label="Zoom out" disabled={zoom<=1} onClick={()=>setZoom(Math.max(1,zoom-1))}>−</button><input aria-label="Timeline zoom" type="range" min={1} max={20} step={1} value={zoom} onChange={e=>setZoom(Number(e.target.value))}/><button aria-label="Zoom in" disabled={zoom>=20} onClick={()=>setZoom(Math.min(20,zoom+1))}>+</button><button title="Fit timeline to width" onClick={()=>setZoom(1)}>Fit</button></div>
     </div>
     <div className="context-timeline" aria-label="Editing timeline">
-      <div className="track-labels"><div className="track-ruler-label"><button aria-label="Timeline controls" title="Timeline controls" onClick={()=>setTool('Cut')}><EditorIcon name="more"/></button></div><button onClick={()=>{setTool('Text');if(recipe.text.length)selectText(selectedText)}}><EditorIcon name="text"/><span>Text</span></button><button onClick={()=>setTool('Transform')}><EditorIcon name="video"/><span>Video</span></button><button onClick={()=>setTool('Audio')}><EditorIcon name="audio"/><span>Audio</span></button></div>
+      <div className="track-labels"><div className="track-ruler-label"><button aria-label="Timeline controls" title="Timeline controls" onClick={()=>openTool('Cut')}><EditorIcon name="more"/></button></div><button onClick={()=>{openTool('Text');if(recipe.text.length)openText(selectedText)}}><EditorIcon name="text"/><span>Text</span></button><button onClick={()=>openTool('Transform')}><EditorIcon name="video"/><span>Video</span></button><button onClick={()=>openTool('Audio')}><EditorIcon name="audio"/><span>Audio</span></button></div>
       <div className="timeline-scroll"><div className="timeline" style={{width:`${zoom*100}%`}}>
-        <div className="timeline-ruler" onClick={e=>{const rect=e.currentTarget.getBoundingClientRect();void run(()=>seek((e.clientX-rect.left)/rect.width*duration));}}>{Array.from({length:Math.min(8,Math.max(2,Math.ceil(duration/2)))},(_,i)=>{const interval=duration>16?duration/7:2;const at=i*interval;return <span key={i} style={{left:`${at/duration*100}%`}}>{stamp(at).slice(0,8)}</span>})}</div>
+        <div className="timeline-ruler" onClick={e=>{const rect=e.currentTarget.getBoundingClientRect();void run(()=>seek((e.clientX-rect.left)/rect.width*duration));}}>{Array.from({length:rulerDivisions+1},(_,i)=>{const at=i/rulerDivisions*duration;return <span key={i} style={{left:`${at/duration*100}%`}}>{duration<10?`${at.toFixed(1)} s`:stamp(at).slice(duration>=3600?0:3,8)}</span>})}</div>
         <div className="timeline-media">
-          <div className="text-track">{recipe.text.map((c,i)=><button key={i} className="text-clip" aria-label={`Select timeline text ${i+1}`} aria-pressed={tool==='Text'&&i===selectedText} style={{left:`${c.in/duration*100}%`,width:`${(c.out-c.in)/duration*100}%`}} onClick={()=>{selectText(i);if(time<c.in||time>=c.out)void run(()=>seek(c.in,true));}}><span>T</span>{c.text||'Untitled text'}</button>)}{!recipe.text.length&&<button className="empty-text-track" onClick={()=>setTool('Text')}>+ Add a title</button>}</div>
-          <div className="video-track" onClick={()=>setTool('Transform')}>{thumbnails}{tool==='Cut'&&<div className="region-tracks" onClick={e=>e.stopPropagation()}>{recipe.segments.map((s,i)=><div className="region-lane" key={i}><button className="timeline-region" aria-label={`Select timeline region ${i+1}`} aria-pressed={active===i} style={{left:`${s.in/duration*100}%`,width:`${(s.out-s.in)/duration*100}%`}} onClick={()=>select(i)}>{i+1}</button></div>)}</div>}</div>
-          <div className="audio-track" onClick={()=>setTool('Audio')}>{wave.length>0?<svg className="waveform" viewBox={`0 0 ${wave.length} 100`} preserveAspectRatio="none" aria-label="Audio waveform">{wave.map((v,i)=><line key={i} x1={i} x2={i} y1={50-Math.min(1,Math.abs(v)/wavePeak)*40} y2={50+Math.min(1,Math.abs(v)/wavePeak)*40}/>)}</svg>:<span className="waveform-empty">Original audio</span>}</div>
+          <div className="text-track">{recipe.text.map((c,i)=><button key={i} className="text-clip" aria-label={`Select timeline text ${i+1}`} aria-pressed={tool==='Text'&&i===selectedText} style={{left:`${c.in/duration*100}%`,width:`${(c.out-c.in)/duration*100}%`}} onClick={()=>{openText(i);if(time<c.in||time>=c.out)void run(()=>seek(c.in,true));}}><span>T</span>{c.text||'Untitled text'}</button>)}{!recipe.text.length&&<button className="empty-text-track" onClick={()=>openTool('Text')}>Add text</button>}</div>
+          <div className="video-track" onClick={()=>openTool('Cut')}>{thumbnails}<div className="region-tracks" onClick={e=>e.stopPropagation()}>{recipe.segments.map((s,i)=>{
+            const segment=trimDrag?.index===i?{...s,[trimDrag.edge]:trimDrag.value}:s;
+            return <div className="region-lane" key={i}><div className={`timeline-region-wrapper${active===i?' is-selected':''}`} style={{left:`${segment.in/duration*100}%`,width:`${(segment.out-segment.in)/duration*100}%`}}><button className="timeline-region" aria-label={`Select timeline region ${i+1}`} aria-pressed={active===i} onClick={()=>{select(i);openTool('Cut');}}>{i+1}</button>{tool==='Cut'&&active===i&&(['in','out'] as const).map(edge=><button key={edge} className={`trim-handle trim-${edge}`} role="slider" aria-label={`Region ${i+1} ${edge==='in'?'start':'end'} trim handle`} aria-orientation="horizontal" aria-valuemin={edge==='in'?0:segment.in+.001} aria-valuemax={edge==='in'?segment.out-.001:duration} aria-valuenow={segment[edge]} aria-valuetext={stamp(segment[edge])} onPointerDown={e=>beginTrim(e,i,edge)} onKeyDown={e=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(e.key))return;e.preventDefault();e.stopPropagation();const step=e.shiftKey?.1:.01;const value=e.key==='Home'?(edge==='in'?0:segment.in+.001):e.key==='End'?(edge==='in'?segment.out-.001:duration):Math.max(edge==='in'?0:segment.in+.001,Math.min(edge==='in'?segment.out-.001:duration,segment[edge]+(e.key==='ArrowLeft'?-step:step)));commitTrim(i,edge,Math.round(value*1000)/1000);}}><span aria-hidden="true"/></button>)}</div></div>;
+          })}</div></div>
+          <div className="audio-track" onClick={()=>openTool('Audio')}>{wave.length>0?<svg className="waveform" viewBox={`0 0 ${wave.length} 100`} preserveAspectRatio="none" aria-label="Audio waveform">{wave.map((v,i)=><line key={i} x1={i} x2={i} y1={50-Math.min(1,Math.abs(v)/wavePeak)*40} y2={50+Math.min(1,Math.abs(v)/wavePeak)*40}/>)}</svg>:<span className="waveform-empty">{recipe.audio.mode==='mute'?'Audio removed':'Waveform unavailable'}</span>}</div>
           <div className="timeline-cursor" style={{left:`${time/duration*100}%`}} aria-hidden="true"/>
         </div>
         <input className="scrubber" aria-label="Timeline playhead" type="range" min={0} max={duration} step={.001} value={time} onChange={e=>void run(()=>seek(Number(e.target.value)))}/>
       </div></div>
     </div>
-    <div className="compact-timeline-status"><span>Region {active+1} <b>·</b> {(region.out-region.in).toFixed(3)} s</span><span role="status">{message}</span><span>{stamp(region.in)} – {stamp(region.out)}</span></div>
+    <div className="compact-timeline-status"><span>{recipe.segments.length} kept {recipe.segments.length===1?'section':'sections'} <b>·</b> {totalKept.toFixed(3)} s</span><span role="status">{message}</span><span>From {stamp(duration)}</span></div>
     {error&&<p role="alert" className="error">{error}</p>}
   </div>;
 }
