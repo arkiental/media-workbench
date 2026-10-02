@@ -13,7 +13,12 @@ export const api = {
   session:(token:string)=>request('/session',{method:'POST',body:JSON.stringify({token})}),
   capabilities:()=>request<Capabilities>('/capabilities'), sources:()=>request<Source[]>('/sources'), artifacts:()=>request<Artifact[]>('/artifacts'), jobs:()=>request<Job[]>('/jobs'),
   editArtifact:(artifactId:string)=>request<Source>('/sources/from-artifact',{method:'POST',body:JSON.stringify({artifactId})}),
-  upload:(file:File)=>request<Source>('/uploads',{method:'POST',headers:{'content-type':'application/octet-stream','x-filename':encodeURIComponent(file.name)},body:file}),
+  upload:(file:File,onProgress?:(progress:number)=>void)=>new Promise<Source>((resolve,reject)=>{
+    const xhr=new XMLHttpRequest();xhr.open('POST','/api/v1/uploads');xhr.setRequestHeader('content-type','application/octet-stream');xhr.setRequestHeader('x-filename',encodeURIComponent(file.name));
+    xhr.upload.onprogress=event=>{if(event.lengthComputable)onProgress?.(event.loaded/event.total);};
+    xhr.onerror=()=>reject(new Error('Import connection interrupted. Check free disk space and try again.'));xhr.onabort=()=>reject(new Error('Import cancelled'));
+    xhr.onload=()=>{let data:any;try{data=JSON.parse(xhr.responseText);}catch{reject(new Error('The import service returned an invalid response'));return;}if(xhr.status>=200&&xhr.status<300)resolve(data);else reject(new ApiError(data.error||'Import failed',xhr.status));};xhr.send(file);
+  }),
   inspect:(download:DownloadRequest)=>request<any>('/sources/inspect',{method:'POST',body:JSON.stringify(download)}),
   submit:(job:JobRequest)=>request<Job>('/jobs',{method:'POST',headers:{'idempotency-key':crypto.randomUUID()},body:JSON.stringify(job)}),
   batch:(items:DownloadRequest[])=>request<{id:string;jobs:Job[]}>('/batches',{method:'POST',headers:{'idempotency-key':crypto.randomUUID()},body:JSON.stringify({items})}),

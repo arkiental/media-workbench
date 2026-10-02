@@ -2,6 +2,7 @@
 const { contextBridge,ipcRenderer }=require('electron');
 contextBridge.exposeInMainWorld('mediaWorkbench',Object.freeze({
   capabilities:()=>ipcRenderer.invoke('native:capabilities'),
+  chooseDownloadFolder:()=>ipcRenderer.invoke('native:choose-download-folder'),
   copyFile:id=>ipcRenderer.invoke('native:copy-file',id),
   copyPath:id=>ipcRenderer.invoke('native:copy-path',id),
   reveal:id=>ipcRenderer.invoke('native:reveal',id),

@@ -55,6 +55,13 @@ export async function validateMedia(path:string,tools:ToolPaths,ctx?:ExecutionCo
   return media;
 }
 const encoderCache=new Map<string,EncoderCapability[]>();
+/** Fast local import check: metadata and bounded decodes, not a full-length render. */
+export async function inspectLocalImport(path:string,tools:ToolPaths,ctx:ExecutionContext):Promise<MediaInfo>{
+  const media=await probe(path,tools,ctx);
+  if(!media.streams.some(s=>s.type==='video'||s.type==='audio')||!Number.isFinite(media.duration)||media.duration<=0)throw Error('The selected file has no playable video or audio');
+  for(const start of [...new Set([0,Math.max(0,media.duration-.25)])])await runProcess(tools.ffmpeg,[...BASE,'-xerror',...INPUT_POLICY,'-ss',String(start),'-i',safePath(path),'-t','0.25','-map','0:v:0?','-map','0:a:0?','-f','null','-'],ctx);
+  return media;
+}
 export async function testEncoders(tools:ToolPaths,workDir:string,ctx?:ExecutionContext,codec?:ExportOptions['codec']):Promise<EncoderCapability[]>{
   if(ctx?.signal.aborted)throw new Error('Operation cancelled');
   const version=(await runProcess(tools.ffmpeg,['-version'],ctx)).stdout.toString().split(/\r?\n/)[0];

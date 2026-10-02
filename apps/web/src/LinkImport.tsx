@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import {desktopBridge} from '../../../packages/platform/src/index';
 import { bytes } from '../../../packages/ui/src/index';
 import { EditorIcon } from './EditorIcon';
 import { formatRows } from './downloadQuality';
@@ -8,7 +9,7 @@ export type LinkImportProps = {
   url:string; setUrl:(value:string)=>void; canInspect:boolean; canDownload:boolean; working?:string; error:string;
   metadata?:any; entry?:any; itemIndex:number; setItemIndex:(index:number)=>void;
   format:string; setFormat:(format:string)=>void;
-  inspect:()=>void; download:(format:string,kind:'video'|'audio')=>void; duration:(seconds:number)=>string; children?:React.ReactNode;
+  inspect:()=>void; download:(format:string,kind:'video'|'audio',fileName:string,destinationId?:string)=>void; duration:(seconds:number)=>string; children?:React.ReactNode;
 };
 
 const views=(count:number)=>new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:1}).format(count);
@@ -21,6 +22,9 @@ export function LinkImport(p:LinkImportProps) {
   const visible=rows.filter(row=>filter==='all'||row.kind===filter);
   const selected=rows.find(row=>row.format===p.format)||rows[0];
   const m=p.metadata,title=p.entry?.title||m?.title||'';
+  const [fileName,setFileName]=useState(''),[destination,setDestination]=useState<{id:string;label:string}>(),[folderError,setFolderError]=useState('');
+  useEffect(()=>setFileName(title.replace(/[\\/:*?"<>|\x00-\x1f]/g,'_').slice(0,160)),[title,p.itemIndex]);
+  const chooseFolder=async()=>{try{setFolderError('');const selected=await desktopBridge()?.chooseDownloadFolder?.();if(selected)setDestination(selected);}catch(error){setFolderError(error instanceof Error?error.message:String(error));}};
   const total=p.entry?.duration??m?.duration;
   const busy=!!p.working;
   return <div className="link-import">
@@ -61,10 +65,11 @@ export function LinkImport(p:LinkImportProps) {
       </section>
       <section className="li-step"><h2><span>4.</span> Download</h2>
         <div className="li-save">
-          <label className="li-name"><input aria-label="File name" value={title} readOnly/><span>{selected?.ext?`.${selected.ext.toLowerCase()}`:''}</span></label>
-          <div className="li-dest"><EditorIcon name="folder" size={22}/><span>Library</span><button type="button" disabled title="Downloads are saved to your Library">Change</button></div>
-          <button className="li-go" type="button" disabled={!p.canDownload||busy} onClick={()=>p.download(selected?.format||'',selected?.kind||'video')}><EditorIcon name="download" size={30}/><span><b>{p.working==='download'?'Queueing…':'Download'}</b>{selected?.bytes?<small>{size(selected.bytes)}</small>:null}</span></button>
+          <label className="li-name"><input aria-label="File name" maxLength={160} value={fileName} disabled={busy} onChange={e=>setFileName(e.target.value)} placeholder="Video name"/><span>{selected?.ext?`.${selected.kind==='video'&&selected.format.includes('+')?'mkv':selected.ext.toLowerCase()}`:''}</span></label>
+          <div className="li-dest"><EditorIcon name="folder" size={22}/><span title={destination?.label}>{destination?.label||'Library'}</span><button type="button" disabled={busy||!desktopBridge()?.chooseDownloadFolder} title={desktopBridge()?.chooseDownloadFolder?'Choose a folder; a copy also stays in Library':'Use the desktop app to choose a folder'} onClick={()=>void chooseFolder()}>Change</button>{destination&&<button type="button" disabled={busy} onClick={()=>setDestination(undefined)}>Reset</button>}</div>
+          <button className="li-go" type="button" disabled={!p.canDownload||busy||!fileName.trim()||/[\\/:*?"<>|\x00-\x1f]/.test(fileName)} onClick={()=>p.download(selected?.format||'',selected?.kind||'video',fileName.trim(),destination?.id)}><EditorIcon name="download" size={30}/><span><b>{p.working==='download'?'Queueing…':'Download'}</b>{selected?.bytes?<small>{size(selected.bytes)}</small>:null}</span></button>
         </div>
+        {folderError&&<p role="alert">{folderError}</p>}{!desktopBridge()?.chooseDownloadFolder&&<p>Downloads stay in Library. Use Download file afterward to save through your browser.</p>}
       </section></>}
     {p.children}
   </div>;
