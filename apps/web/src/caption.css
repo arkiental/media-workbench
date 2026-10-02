@@ -1,0 +1,13 @@
+.viewport-caption { position:absolute; inset:0 auto auto 0; box-sizing:border-box; transform-origin:0 0; background:#000; color:#fff; font-family:Arial,sans-serif; text-align:center; white-space:pre; overflow:hidden; pointer-events:none; }
+.caption-inspector .text-properties { padding:16px 18px; gap:16px; }
+.caption-inspector > .check { margin:16px 18px 0; }
+.caption-inspector textarea { resize:vertical; min-height:110px; }
+.caption-height { font-size:12px; color:var(--muted); }
+.download-qualities { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:16px 0; }
+.download-qualities button[aria-pressed=true] { color:var(--on-accent); background:var(--accent); border-color:var(--accent); }
+.download-qualities > span { width:100%; font-size:12px; color:var(--muted); }
+.editor-project-settings { margin-top:16px; }
+.editor-project-settings .form-grid { display:flex; flex-direction:column; }
+@media(max-width:850px) {
+  .caption-inspector .inspector-heading { display:none; }
+}

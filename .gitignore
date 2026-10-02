@@ -11,3 +11,11 @@ release/
 output/
 .env.*
 !.env.example
+
+# Local machine files
+.runtime/
+data/
+START-HERE.txt
+Start Public Tunnel.cmd
+Launch Media Workbench.cmd
+scripts/tunnel-prototype.mjs

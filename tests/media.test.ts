@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, stat, access, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, stat, access, writeFile, appendFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { availableParallelism } from 'node:os';
+import { mediaThreads } from '../packages/media/src/index.ts';
 import { generateFixtures } from '../packages/test-fixtures/generate.ts';
 import { discoverTools, toolVersions, probe, runProcess, testEncoders, planExport, exportMedia, frameIndex, extractFrame, waveform, createProxy, mapCues } from '../packages/media/src/index.ts';
 import { RecipeSchema, ExportSchema } from '../packages/contracts/src/index.ts';
@@ -15,6 +17,60 @@ const options=(patch:Record<string,unknown>={})=>ExportSchema.parse({cut:'exact'
 async function hashes(path:string){return (await runProcess(tools.ffmpeg,['-hide_banner','-loglevel','error','-i',path,'-map','0:v:0','-an','-c:v','rawvideo','-pix_fmt','yuv420p','-f','framemd5','-'])).stdout.toString().split(/\r?\n/).filter(l=>l&&!l.startsWith('#')).map(l=>l.split(',').at(-1)!.trim());}
 async function audioSamples(path:string){return (await runProcess(tools.ffmpeg,['-v','error','-i',path,'-map','0:a:0','-ac','1','-ar','48000','-c:a','pcm_s16le','-f','s16le','-'])).stdout;}
 const evidence:any={testedAt:new Date().toISOString(),platform:process.platform,versions:await toolVersions(tools),encoders,outputs:[],checks:[]};
+
+test('CPU threads use the machine capacity while respecting explicit worker budgets',()=>{
+  assert.equal(mediaThreads(),availableParallelism());
+  assert.equal(mediaThreads({...ctx(),maxCpuCores:2}),Math.min(2,availableParallelism()));
+  assert.equal(mediaThreads({...ctx(),maxCpuCores:.25}),1);
+});
+
+test('real NVIDIA fast exports preserve full duration and strict size across supported codecs',async t=>{
+  const supported=encoders.filter(e=>e.available&&e.name.endsWith('_nvenc'));
+  if(!supported.length){t.skip('No operational NVIDIA encoder');return;}
+  for(const encoder of supported){
+    const output=join(root,`gpu-fast-${encoder.codec}.mp4`);
+    const result=await exportMedia(fixtures.numbered,output,recipe(),options({encoder:'hardware',allowSoftwareFallback:false,codec:encoder.codec,speed:'fast',mode:'size',maxBytes:150000,maxAttempts:1}),tools,{...ctx(),allowedEncoders:[encoder.name]});
+    assert.equal(result.plan.encoder,encoder.name);assert.equal(result.plan.hardware,true);assert.equal(result.plan.cpuThreads,availableParallelism());
+    assert(result.media.size<=150000);assert.equal((await hashes(output)).length,40);assert(Math.abs(result.media.duration-4)<.15);
+    evidence.outputs.push({path:output,...result});
+  }
+});
+
+test('max-size H264/HEVC budgets finish in one pass with complete short, silent and multi-cut outputs',async()=>{
+  for(const [name,edit,settings,frames] of [
+    ['audio',recipe(),{maxBytes:90000},40],
+    ['short',recipe({segments:[{in:.2,out:1}],audio:{mode:'mute'}}),{maxBytes:30000},8],
+    ['multi',recipe({segments:[{in:0,out:1},{in:2,out:3}],audio:{mode:'mute'}}),{maxBytes:50000},20],
+    ['hevc',recipe({audio:{mode:'mute'}}),{maxBytes:90000,codec:'hevc'},40],
+  ] as const){
+    let encodes=0,validations=0;const base=ctx();const output=join(root,`one-pass-${name}.mp4`);
+    const result=await exportMedia(fixtures.numbered,output,edit,options({mode:'size',maxAttempts:1,...settings}),tools,{...base,runTool:async(binary,args,processOptions)=>{
+      if(args.includes('-/filter_complex')){encodes++;assert(!args.includes('-pass'));assert(!args.includes('-fs'));}
+      if(args.includes('-xerror')&&args.some(arg=>arg.includes('.partial-')))validations++;
+      return runProcess(binary,args,base,processOptions);
+    }});
+    assert.equal(encodes,1);assert.equal(validations,1);assert(result.media.size<=settings.maxBytes);assert.equal((await hashes(output)).length,frames);
+  }
+});
+
+test('oversized candidate skips decode; correction and exhausted budget never publish oversize',async()=>{
+  for(const maxAttempts of [1,2]){
+    let encodes=0,validations=0;const base=ctx(),output=join(root,`forced-oversize-${maxAttempts}.mp4`);
+    const operation=exportMedia(fixtures.numbered,output,recipe({audio:{mode:'mute'}}),options({mode:'size',maxBytes:90000,maxAttempts}),tools,{...base,runTool:async(binary,args,processOptions)=>{
+      if(args.includes('-xerror')&&args.some(arg=>arg.includes('.partial-')))validations++;
+      const result=await runProcess(binary,args,base,processOptions);
+      if(args.includes('-/filter_complex')&&++encodes===1)await appendFile(processOptions!.outputPath!,Buffer.alloc(100000));
+      return result;
+    }});
+    if(maxAttempts===1){await assert.rejects(operation,/Cannot meet/);await assert.rejects(access(output));assert.equal(validations,0);}
+    else{const result=await operation;assert.equal(encodes,2);assert.equal(validations,1);assert(result.media.size<=90000);assert.equal((await hashes(output)).length,40);}
+  }
+});
+
+test('audio-only max size uses an audio budget without an unused minimum video bitrate',async()=>{
+  const result=await exportMedia(fixtures.audio,join(root,'audio-budget.mp4'),recipe({segments:[{in:0,out:1}]}),options({mode:'size',maxBytes:23000,maxAttempts:1}),tools,ctx());
+  assert(result.media.size<=23000);assert.equal(result.media.streams.some(stream=>stream.type==='video'),false);assert(Math.abs(result.media.duration-1)<.15);
+});
 
 test('real tool capability tests validate a file; strict unavailable GPU selection rejects',async()=>{assert(encoders.find(e=>e.name==='libx264')?.available);const media=await probe(fixtures.numbered,tools);const unavailable=encoders.map(e=>({...e,available:e.hardware?false:e.available}));assert.throws(()=>planExport(recipe(),options({encoder:'hardware',allowSoftwareFallback:false}),media,unavailable),/No operational/);const plan=planExport(recipe(),options({encoder:'hardware',allowSoftwareFallback:true}),media,unavailable);assert.equal(plan.hardware,false);assert.equal(plan.encoder,'libx264');assert(plan.warnings.length);});
 test('CFR exact multi-cut preserves visibly numbered frames and in-inclusive out-exclusive identity',async()=>{const out=join(root,'exact-cfr.mp4');const result=await exportMedia(fixtures.numbered,out,recipe({segments:[{in:.3,out:1},{in:1.6,out:2}]}),options(),tools,ctx());const source=await hashes(fixtures.numbered),actual=await hashes(out);assert.deepEqual(actual,[...source.slice(3,10),...source.slice(16,20)]);evidence.outputs.push({path:out,...result});evidence.checks.push('CFR frame hashes: source frames 3..9 and 16..19 exactly preserved');await extractFrame(out,join(root,'exact-first.png'),0,tools);});

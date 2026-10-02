@@ -20,13 +20,20 @@ export async function publish(store:Store,staged:string,ownerId:string,name:stri
  const artifact:Artifact={id,ownerId,name:safeName(name),bytes:stat.size,media:{...media,size:stat.size},kind,createdAt:new Date().toISOString(),pinned:false,validated:true,...(jobId?{jobId}:{}),...(sourceId?{sourceId}:{})};
  store.put('artifact',id,ownerId,artifact);return artifact;}finally{if(!reserved)reservation.release();}
 }
+/** Overlay images live beside artifacts as validated PNG files named by their record id. */
+export async function overlayPath(store:Store,id:string){
+ if(!/^[0-9a-f-]{36}$/.test(id))throw Error('Invalid overlay image ID');
+ const root=path.join(store.dataDir,'overlays');await mkdir(root,{recursive:true,mode:0o700});if((await lstat(root)).isSymbolicLink())throw Error('Unsafe overlay directory');
+ return path.join(await realpath(root),id+'.png');
+}
 export const safeName=(name:string)=>{let value=name.replace(/[\x00-\x1f<>:"/\\|?*]/g,'_').replace(/^\.+/,'').slice(0,180).replace(/[. ]+$/,'')||'media';if(/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(value))value='_'+value;return value;};
 /** A separate verified copy preserves the original when an external editor changes the handoff. */
 const handoffs=new WeakMap<Store,Map<string,Promise<string>>>();
 export function nativeCopy(store:Store,artifact:Artifact){
+ const release=store.holdArtifact(artifact.id);
  let active=handoffs.get(store);if(!active){active=new Map();handoffs.set(store,active);}const previous=active.get(artifact.id)||Promise.resolve('');
  const operation=previous.catch(()=>{}).then(()=>makeNativeCopy(store,artifact));active.set(artifact.id,operation);
- return operation.finally(()=>{if(active!.get(artifact.id)===operation)active!.delete(artifact.id);});
+ return operation.finally(()=>{release();if(active!.get(artifact.id)===operation)active!.delete(artifact.id);});
 }
 async function makeNativeCopy(store:Store,artifact:Artifact){
  const source=await managedPath(store,artifact.id);const root=path.join(store.dataDir,'handoffs');await mkdir(root,{recursive:true,mode:0o700});if((await lstat(root)).isSymbolicLink())throw Error('Unsafe handoff directory');
@@ -47,8 +54,9 @@ export async function deleteArtifact(store:Store,artifact:Artifact,confirmOrigin
  const sources=store.all<Source>('source',artifact.ownerId).filter(s=>s.artifactId===artifact.id),ids=new Set(sources.map(s=>s.id));
  if(store.all<any>('project',artifact.ownerId).some(p=>ids.has(p.recipe.sourceId)||ids.has(p.recipe.audio.sourceId)))throw Error('Artifact is protected by a saved project');
  if(store.jobs(artifact.ownerId).some(j=>!['completed','failed','cancelled','interrupted'].includes(j.state)&&(j.artifactId===artifact.id||(j.request.type==='export'&&(ids.has(j.request.recipe.sourceId)||ids.has(j.request.recipe.audio.sourceId||'')))||(j.request.type==='proxy'&&ids.has(j.request.sourceId)))))throw Error('Artifact is protected by active or queued work');
- const file=await managedPath(store,artifact.id,true);const handoff=store.get<any>('handoff',artifact.id,artifact.ownerId);
- if(handoff){const root=path.join(store.dataDir,'handoffs'),dir=path.join(root,artifact.id);if(safeName(handoff.name)!==handoff.name||(await lstat(root)).isSymbolicLink()||(await lstat(dir)).isSymbolicLink())throw Error('Unsafe handoff cleanup');const copy=path.join(dir,handoff.name);const info=await lstat(copy).catch(()=>undefined);if(info&&(!info.isFile()||info.isSymbolicLink()))throw Error('Unsafe handoff cleanup');if(info)await unlink(copy);store.delete('handoff',artifact.id,artifact.ownerId);}
+ const file=await managedPath(store,artifact.id,true);
+ // Clipboard paths and external apps use the separate handoff copy. Keep it
+ // until its own expiry; retention cleans it even after the library row is gone.
  await unlink(file);store.delete('artifact',artifact.id,artifact.ownerId);for(const s of sources)store.delete('source',s.id,s.ownerId);return {deleted:artifact.id,historyRetained:true};}finally{store.endArtifactDelete(artifact.id);}
 }
 export async function retention(store:Store,ownerId:string){

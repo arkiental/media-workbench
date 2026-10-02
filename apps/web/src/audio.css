@@ -1,0 +1,65 @@
+/* Audio and Transform inspectors: flat, square, hairline sections to match the monochrome editor. */
+.editing-shell .editor-inspector:has(.audio-inspector),
+.editing-shell .editor-inspector:has(.transform-inspector) { padding:0; }
+.audio-inspector,.transform-inspector { display:flex; flex-direction:column; }
+.audio-inspector > *,.transform-inspector > * { flex:none; min-width:0; }
+.audio-card { display:flex; flex-direction:column; gap:12px; padding:14px 16px 16px; border-bottom:1px solid var(--line); }
+.audio-card-head { font-size:11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); }
+.editing-shell .audio-note { margin:0; font-size:12px; line-height:1.45; color:var(--muted); }
+.audio-segments { display:flex; border:1px solid var(--control-line); }
+.editing-shell .audio-segment { flex:1 1 0; min-width:0; display:flex; align-items:center; justify-content:center; min-height:34px; padding:5px 6px; font-size:12px; font-weight:500; background:transparent; border:0; border-left:1px solid var(--control-line); border-radius:0; white-space:nowrap; }
+.editing-shell .audio-segment:first-child { border-left:0; }
+.editing-shell .audio-segment:hover:not([aria-pressed=true]) { background:var(--raised); }
+.editing-shell .audio-segment[aria-pressed=true] { color:var(--on-accent); background:var(--accent); }
+.audio-field { display:flex; flex-direction:column; gap:6px; font-size:12px; color:var(--muted); }
+.editing-shell .audio-field select { min-height:34px; font-size:13px; border:1px solid var(--control-line); border-radius:0; }
+.audio-slider { display:grid; grid-template-columns:minmax(0,1fr) auto; grid-template-areas:"head head" "range number"; align-items:center; gap:4px 12px; }
+.audio-slider-head { grid-area:head; display:flex; justify-content:space-between; font-size:13px; }
+.audio-value { font-variant-numeric:tabular-nums; color:var(--muted); }
+.audio-slider > input[type=range] { grid-area:range; width:100%; }
+.audio-number { grid-area:number; display:flex; align-items:center; gap:4px; }
+.editing-shell .audio-number input { width:58px; min-height:30px; padding:3px 6px; text-align:center; font-size:12px; font-variant-numeric:tabular-nums; border:1px solid var(--control-line); border-radius:0; }
+.editing-shell .audio-number em { font-style:normal; font-size:12px; color:var(--muted) !important; min-width:10px; }
+.audio-quick { display:flex; gap:6px; flex-wrap:wrap; }
+.editing-shell .audio-quick button { min-height:28px; padding:3px 10px; font-size:12px; font-weight:400; border:1px solid var(--control-line); border-radius:0; background:transparent; }
+.editing-shell .audio-quick button:hover:not([aria-pressed=true]) { background:var(--raised); }
+.editing-shell .audio-quick button[aria-pressed=true] { background:var(--accent); color:var(--on-accent); border-color:var(--accent); }
+.audio-switch { position:relative; display:flex; align-items:flex-start; gap:12px; padding:14px 16px; border-bottom:1px solid var(--line); cursor:pointer; }
+.audio-switch input { position:absolute; opacity:0; inset:0; margin:0; width:100%; height:100%; min-height:0; padding:0; border:0; cursor:pointer; }
+.audio-switch i { position:relative; flex:none; width:34px; height:18px; margin-top:1px; border:1px solid var(--control-line); background:transparent; transition:background 120ms; }
+.audio-switch i::after { content:''; position:absolute; left:2px; top:2px; width:12px; height:12px; background:var(--muted); transition:transform 120ms,background 120ms; }
+.audio-switch input:checked + i { background:var(--accent); border-color:var(--accent); }
+.audio-switch input:checked + i::after { transform:translateX(16px); background:var(--on-accent); }
+.audio-switch input:focus-visible + i { outline:2px solid var(--focus); outline-offset:2px; }
+.audio-switch span { display:flex; flex-direction:column; gap:2px; min-width:0; }
+.audio-switch strong { font-size:13px; font-weight:500; }
+.audio-switch small { font-size:12px; color:var(--muted); line-height:1.4; }
+.editing-shell .audio-reset { display:flex; align-items:center; justify-content:center; gap:7px; min-height:34px; margin:14px 16px 16px; font-size:12px; border:1px solid var(--control-line); border-radius:0; background:transparent; }
+@media(max-width:850px) {
+  .editing-shell .audio-segment,.editing-shell .audio-reset,.editing-shell .audio-number input,.editing-shell .audio-field select { min-height:44px; }
+  .editing-shell .audio-quick button { min-height:40px; }
+}
+/* Waveform reflects volume, fades and removal; clipped peaks show in red. */
+.audio-track .waveform line.clip { stroke:var(--danger); }
+.audio-track.is-removed .waveform { opacity:.25; }
+.waveform-badge { position:absolute; left:8px; top:50%; transform:translateY(-50%); z-index:3; padding:2px 8px; font-size:11px; background:var(--surface); border:1px solid var(--control-line); pointer-events:none; }
+.waveform-empty.is-loading { animation:thumb-shimmer-fade 1.2s ease-in-out infinite alternate; }
+@keyframes thumb-shimmer-fade { from { opacity:.4; } to { opacity:1; } }
+.preview-notes { display:block; margin:4px 0 0; color:var(--muted); font-size:11px; }
+/* Keyboard shortcuts overlay */
+.shortcuts-overlay { position:fixed; inset:0; z-index:1100; display:grid; place-items:center; padding:16px; background:rgb(0 0 0 / .6); }
+.shortcuts-panel { width:min(560px,100%); max-height:100%; overflow:auto; background:var(--surface); color:var(--ink); border:1px solid var(--control-line); }
+.shortcuts-head { display:flex; align-items:center; justify-content:space-between; padding:12px 16px; border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--surface); }
+.editing-shell .shortcuts-head button { min-height:30px; padding:3px 12px; font-size:12px; border-radius:0; }
+.shortcuts-body { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:4px 24px; padding:8px 16px 16px; }
+.shortcuts-body h3 { margin:14px 0 6px; font-size:11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); }
+.shortcuts-body dl { display:grid; grid-template-columns:auto 1fr; gap:6px 12px; margin:0; align-items:baseline; }
+.shortcuts-body dt { display:flex; gap:4px; flex-wrap:wrap; }
+.shortcuts-body dd { margin:0; font-size:13px; }
+.shortcuts-body kbd { min-width:22px; padding:1px 6px; text-align:center; font:11px Arial,sans-serif; border:1px solid var(--control-line); background:var(--surface-alt); }
+@media(max-width:850px) { .preview-notes { padding:0 12px; } }
+@media(pointer:coarse) { .editing-shell .history-tools button[aria-label="Keyboard shortcuts"] { display:none; } }
+@media(max-width:1100px) {
+  .editing-shell .compact-timeline-toolbar { flex-wrap:wrap; row-gap:6px; }
+  .editing-shell .history-tools button[aria-label="Keyboard shortcuts"] span { display:none; }
+}

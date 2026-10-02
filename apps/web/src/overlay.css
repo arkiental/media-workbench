@@ -1,0 +1,90 @@
+/* Image overlays: tool hue, the extra timeline track, the on-video layer and the inspector. */
+:root, :root[data-theme=dark], .editing-shell { --hue-overlay: #ff8ac6; }
+:root[data-theme=light] { --hue-overlay: #a8326c; }
+@media (prefers-color-scheme: light) { :root[data-theme=system] { --hue-overlay: #a8326c; } }
+.editing-shell { --hue-overlay: #ff8ac6; }
+.tone-overlay { color: var(--hue-overlay); }
+.tool-overlay { --tone: var(--hue-overlay); }
+
+/* ---------- Timeline: one more 44px row between Text and Video ---------- */
+.track-labels { grid-template-rows: 34px 44px 44px 60px 44px; }
+.context-timeline { height: 228px; }
+.context-timeline .timeline { min-height: 226px; }
+/* The player gives up the new row's height so the editor still fits the window. */
+@media (min-width: 851px) { .editing-shell .cut-layout, .editing-shell:has(.tool-cut) .cut-layout { height: calc(100dvh - 401px); } }
+@media (min-width: 851px) and (max-width: 1000px) { .editing-shell .cut-layout, .editing-shell:has(.tool-cut) .cut-layout { height: calc(100dvh - 443px); } }
+.overlay-track { position: relative; height: 44px; background: var(--canvas); border-bottom: 1px solid var(--line); }
+.editing-shell .empty-overlay-track { display: inline-flex; align-items: center; gap: 6px; margin: 4px 8px; min-height: 34px; min-width: 80px; padding: 0 12px; font-size: 12px; color: var(--muted); background: transparent; border: 1px dashed var(--line); border-radius: 0; }
+.editing-shell .empty-overlay-track:hover:not(:disabled) { color: var(--ink); border-color: var(--hue-overlay); background: transparent; }
+.overlay-clip { position: absolute; height: calc(100% / var(--lanes, 1)); padding: 3px 0; box-sizing: border-box; min-width: 6px; }
+.editing-shell .overlay-clip-body { display: flex; align-items: center; gap: 6px; width: 100%; height: 100%; min-height: 0; min-width: 0; padding: 0 8px; overflow: hidden; font-size: 12px; font-weight: 400; text-align: left; white-space: nowrap; color: var(--ink); cursor: grab; touch-action: none; border-radius: 0; background: color-mix(in srgb, var(--hue-overlay) 16%, var(--surface-alt)); border: 1px solid color-mix(in srgb, var(--hue-overlay) 55%, transparent); border-left: 3px solid var(--hue-overlay); }
+.editing-shell .overlay-clip-body:active { cursor: grabbing; }
+.editing-shell .overlay-clip-body[aria-pressed=true] { border: 2px solid var(--hue-overlay); background: color-mix(in srgb, var(--hue-overlay) 26%, var(--surface-alt)); }
+.overlay-clip-body img { flex: none; height: calc(100% - 4px); max-height: 26px; aspect-ratio: 1; object-fit: contain; background: repeating-conic-gradient(#555 0 25%, #333 0 50%) 0 0/8px 8px; }
+.overlay-clip-body span { overflow: hidden; text-overflow: ellipsis; }
+.editing-shell .overlay-trim { position: absolute; top: 3px; bottom: 3px; width: 12px; min-width: 0; min-height: 0; padding: 0; border: 0; border-radius: 0; background: var(--hue-overlay); cursor: ew-resize; touch-action: none; z-index: 2; display: grid; place-items: center; }
+.overlay-trim-in { left: 0; }
+.overlay-trim-out { right: 0; }
+.overlay-trim span { width: 2px; height: 40%; background: rgb(0 0 0 / .7); }
+
+/* ---------- Video: overlays sit in the output picture's own box ---------- */
+.viewport-picture { position: absolute; left: 0; overflow: hidden; pointer-events: none; }
+.overlay-layer { position: absolute; inset: 0; }
+.overlay-item { position: absolute; transform: translate(-50%, -50%); pointer-events: auto; }
+.overlay-item img { display: block; width: 100%; height: auto; user-select: none; -webkit-user-drag: none; }
+.editing-shell .overlay-move { position: absolute; inset: 0; width: 100%; height: 100%; min-width: 0; min-height: 0; padding: 0; border: 0; border-radius: 0; background: transparent; cursor: pointer; touch-action: none; }
+.editing-shell .overlay-move:hover { background: transparent; outline: 1px dashed rgb(255 255 255 / .6); }
+.editing-shell .overlay-move:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.overlay-item.is-selected { outline: 1px solid var(--hue-overlay); box-shadow: 0 0 0 1px rgb(0 0 0 / .6); }
+.editing-shell .overlay-item.is-selected .overlay-move { cursor: move; }
+.overlay-item.is-outside { outline-style: dashed; }
+.overlay-handle { position: absolute; width: 12px; height: 12px; background: #fff; border: 2px solid var(--hue-overlay); box-sizing: border-box; touch-action: none; z-index: 1; }
+.overlay-nw { left: 0; top: 0; transform: translate(-50%, -50%); cursor: nwse-resize; }
+.overlay-ne { right: 0; top: 0; transform: translate(50%, -50%); cursor: nesw-resize; }
+.overlay-se { right: 0; bottom: 0; transform: translate(50%, 50%); cursor: nwse-resize; }
+.overlay-sw { left: 0; bottom: 0; transform: translate(-50%, 50%); cursor: nesw-resize; }
+.overlay-outside-note { position: absolute; left: 50%; top: 100%; transform: translate(-50%, 6px); padding: 2px 6px; font-size: 11px; white-space: nowrap; color: #fff; background: rgb(0 0 0 / .75); pointer-events: none; }
+.overlay-guide { position: absolute; background: var(--hue-overlay); pointer-events: none; z-index: 100; }
+.overlay-guide-x { left: 50%; top: 0; bottom: 0; width: 1px; }
+.overlay-guide-y { top: 50%; left: 0; right: 0; height: 1px; }
+
+/* ---------- Inspector ---------- */
+.editing-shell .editor-inspector:has(.overlay-inspector) { padding: 0; }
+.overlay-inspector { display: flex; flex-direction: column; min-height: 100%; }
+.overlay-inspector.is-dropping { outline: 2px dashed var(--hue-overlay); outline-offset: -4px; }
+.overlay-card { display: flex; flex-direction: column; gap: 12px; padding: 14px 16px 16px; border-bottom: 1px solid var(--line); }
+.overlay-card-head { font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.editing-shell .overlay-add { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; font-size: 13px; border: 1px solid var(--hue-overlay); border-radius: 0; background: color-mix(in srgb, var(--hue-overlay) 14%, transparent); }
+.editing-shell .overlay-add:hover:not(:disabled) { background: color-mix(in srgb, var(--hue-overlay) 26%, transparent); }
+.editing-shell .overlay-hint { margin: 0; font-size: 12px; line-height: 1.45; color: var(--muted); }
+.overlay-hint kbd { font-size: 11px; padding: 0 4px; border: 1px solid var(--line); }
+.overlay-list { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; }
+.editing-shell .overlay-choice { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 4px 8px; text-align: left; font-weight: 400; border: 1px solid var(--line); border-radius: 0; background: transparent; }
+.editing-shell .overlay-choice[aria-selected=true] { border-color: var(--hue-overlay); box-shadow: inset 3px 0 var(--hue-overlay); background: var(--selected); }
+.overlay-choice img { flex: none; width: 34px; height: 34px; object-fit: contain; background: repeating-conic-gradient(#555 0 25%, #333 0 50%) 0 0/8px 8px; }
+.overlay-choice > span { display: flex; flex-direction: column; min-width: 0; }
+.overlay-choice strong { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.overlay-choice small { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.overlay-times { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.overlay-time { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--muted); }
+.editing-shell .overlay-time input { min-height: 34px; padding: 4px 8px; font-size: 13px; font-variant-numeric: tabular-nums; border: 1px solid var(--control-line); border-radius: 0; }
+.editing-shell .overlay-time button,.editing-shell .overlay-quick button,.editing-shell .overlay-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 30px; padding: 3px 10px; font-size: 12px; font-weight: 400; border: 1px solid var(--control-line); border-radius: 0; background: transparent; }
+.editing-shell .overlay-time button:hover:not(:disabled),.editing-shell .overlay-quick button:hover:not(:disabled),.editing-shell .overlay-actions button:hover:not(:disabled) { background: var(--raised); }
+.overlay-quick { display: flex; gap: 6px; flex-wrap: wrap; }
+.overlay-length { font-size: 12px; color: var(--muted); }
+.overlay-slider { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.overlay-slider > span { display: flex; justify-content: space-between; }
+.overlay-slider output { font-variant-numeric: tabular-nums; color: var(--muted); }
+.overlay-slider input[type=range] { width: 100%; }
+.overlay-actions { display: flex; gap: 8px; padding: 14px 16px 16px; }
+.overlay-actions button { flex: 1; }
+
+@media (max-width: 850px) {
+  .editing-shell .context-timeline { height: 260px; }
+  .context-timeline .track-labels { grid-template-rows: 44px 52px 52px 60px 52px; }
+  .context-timeline .timeline { min-height: 260px; }
+  .context-timeline .overlay-track { height: 52px; }
+  .editing-shell .overlay-trim { width: 22px; }
+  .overlay-handle { width: 20px; height: 20px; }
+  .editing-shell .overlay-time input,.editing-shell .overlay-time button,.editing-shell .overlay-quick button,.editing-shell .overlay-actions button,.editing-shell .overlay-add { min-height: 44px; }
+}

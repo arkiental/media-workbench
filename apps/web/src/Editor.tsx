@@ -2,32 +2,49 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { EditorIcon } from './EditorIcon';
 import { TextInspector } from './TextInspector';
+import { AudioInspector } from './AudioInspector';
+import { TransformInspector } from './TransformInspector';
+import { OverlayInspector } from './OverlayInspector';
+import { MAX_OVERLAYS, imageFromClipboard, newOverlay, uploadOverlayImage } from './overlay';
 import { ExportSchema, RecipeSchema } from '../../../packages/contracts/src/index';
 import type { Artifact, Capabilities, ExportOptions, Job, Plan, Project, Recipe, Source } from '../../../packages/contracts/src/index';
 import { bytes, Checkbox, Field, NumberField, Panel } from '../../../packages/ui/src/index';
-import { api, contentUrl, request, saveJson, saveText } from './api';
-import { captionsToSrt, initialRecipe, parseCaptions, removeInterval } from './recipe';
+import { api, contentUrl, request, saveJson } from './api';
+import { initialRecipe, removeInterval } from './recipe';
 import { CutWorkspace } from './CutWorkspace';
 import { RenderedPreview } from './RenderedPreview';
 import { browserStorage, draftKey, readDraft, writeDraft, type WorkspaceState } from './drafts';
 import { ArtifactActions } from './ArtifactActions';
+import { angle, clampCrop, outputSize } from './transform';
 type Task = (work:()=>Promise<unknown>)=>Promise<void>;
 
 export function Editor({source,artifact,sources,artifacts,jobs,caps,project,run,refresh,setNotice}:{jobs:Job[];source:Source;artifact:Artifact;sources:Source[];artifacts:Artifact[];caps:Capabilities;project?:Project;run:Task;refresh:()=>Promise<void>;setNotice:(s:string)=>void}) {
   const duration=artifact?.media.duration||1,stream=artifact?.media.streams.find(s=>s.type==='video');
   const storage=browserStorage(),key=draftKey(caps.user.id,source.id,project?.id);
   const [restored]=useState(()=>{const d=readDraft(storage,key,source.id);return d&&(!project||d.updatedAt>=project.updatedAt)?d:undefined;});
-  const [history,setHistory]=useState<Recipe[]>(restored?.history||[project?.recipe||initialRecipe(source.id,duration)]),[cursor,setCursor]=useState(restored?.cursor||0);
+  const [history,setHistory]=useState<Recipe[]>(restored?.history||[project?{...project.recipe,overlays:project.recipe.overlays||[]}:initialRecipe(source.id,duration)]),[cursor,setCursor]=useState(restored?.cursor||0);
   const [workspace,setWorkspace]=useState<WorkspaceState>(restored?.workspace||{selected:0,zoom:1,snap:false});
   const [draftSaved,setDraftSaved]=useState<boolean|null>(true);
-  const tool=workspace.tool||'Cut',selectedText=Math.min(workspace.selectedText||0,Math.max(0,history[cursor].text.length-1));
+  const tool=['Text','Overlay','Audio','Transform','Cut'].includes(workspace.tool||'')?workspace.tool!:'Cut';
   const setTool=(tool:string)=>setWorkspace(w=>({...w,tool:tool as WorkspaceState['tool']}));
-  const selectText=(index:number)=>setWorkspace(w=>({...w,tool:'Text',selectedText:index}));
+
   const exportDialog=useRef<HTMLDialogElement>(null);
   const [previewDialogHost,setPreviewDialogHost]=useState<HTMLDivElement|null>(null);
   const planRevision=useRef(0);const invalidatePlan=()=>{planRevision.current++;setPlan(undefined);};
-  const recipe=history[cursor];const change=(next:Recipe)=>{const updated=[...history.slice(0,cursor+1),next].slice(-100);setHistory(updated);setCursor(updated.length-1);invalidatePlan();};
-  const [options,setOptions]=useState<ExportOptions>(restored?.options||project?.options||ExportSchema.parse({})),[plan,setPlan]=useState<Plan>();
+  const recipe=history[cursor];const change=(raw:Recipe)=>{
+    let next=raw;
+    // Keep an explicit resize in step with crop/rotate changes: same scale factor, new aspect ratio.
+    if(raw.resize&&recipe.resize&&stream&&(raw.crop!==recipe.crop||raw.rotate!==recipe.rotate)&&JSON.stringify(raw.crop)+raw.rotate!==JSON.stringify(recipe.crop)+recipe.rotate){
+      const before=outputSize({...recipe,resize:undefined},stream.width||640,stream.height||360,stream.rotation||0),after=outputSize({...raw,resize:undefined},stream.width||640,stream.height||360,stream.rotation||0);
+      const factor=recipe.resize.width/before.width,fit=(v:number)=>Math.max(2,Math.min(7680,Math.round(v/2)*2));
+      next={...raw,resize:{width:fit(after.width*factor),height:fit(after.height*factor)}};
+    }
+    const updated=[...history.slice(0,cursor+1),next].slice(-100);setHistory(updated);setCursor(updated.length-1);invalidatePlan();};
+  const [options,setOptions]=useState<ExportOptions>(()=>{
+    const selected=restored?.options||project?.options||ExportSchema.parse({mode:'auto',encoder:'auto',speed:'fast'});
+    // Upgrade old source drafts once; saved projects and subsequent explicit choices remain intact.
+    return restored&&!restored.performanceVersion&&!project?{...selected,encoder:'auto',speed:'fast'}:selected;
+  }),[plan,setPlan]=useState<Plan>();
   const [time,setTime]=useState(Math.min(duration,restored?.time||0)),[pauseSource,setPauseSource]=useState(0);
   const [wave,setWave]=useState<number[]>([]),[waveLoading,setWaveLoading]=useState(false);const waveAbort=useRef<AbortController|null>(null);
   const [removeStart,setRemoveStart]=useState(0),[removeEnd,setRemoveEnd]=useState(Math.min(1,duration)),[projectName,setProjectName]=useState(restored?.projectName||project?.name||source.name),[projectId,setProjectId]=useState(restored?.projectId||project?.id);
@@ -37,43 +54,79 @@ export function Editor({source,artifact,sources,artifacts,jobs,caps,project,run,
   const setExport=(next:ExportOptions)=>{setOptions(next);invalidatePlan();};
   useEffect(()=>{request<any[]>('/presets').then(setPresetList).catch(()=>{});return()=>waveAbort.current?.abort();},[]);
   const audio=(patch:Partial<Recipe['audio']>)=>change({...recipe,audio:{...recipe.audio,...patch}});
-  useEffect(()=>{if(!RecipeSchema.safeParse(recipe).success||!ExportSchema.safeParse(options).success){setDraftSaved(null);return;}setDraftSaved(writeDraft(storage,key,{version:1,sourceId:source.id,history,cursor,options,time,workspace,projectName,projectId,presetId,updatedAt:new Date().toISOString()}));},[history,cursor,options,time,workspace,projectName,projectId,presetId,key]);
+  // Uploading takes a moment; the overlay is added to whatever the recipe is by then, at the playhead it was requested from.
+  const [addingOverlay,setAddingOverlay]=useState(false);const latest=useRef({recipe,change});latest.current={recipe,change};
+  const addOverlay=(file:File)=>void run(async()=>{
+    if(!stream)throw new Error('Overlays need a source with video.');
+    if(latest.current.recipe.overlays.length>=MAX_OVERLAYS)throw new Error(`You can use up to ${MAX_OVERLAYS} overlays.`);
+    const at=time;setAddingOverlay(true);
+    try{
+      const image=await uploadOverlayImage(file,file.name&&file.name!=='image.png'?file.name:'Pasted image');
+      const {recipe:current,change:apply}=latest.current,overlay=newOverlay(image,at,duration,outputSize(current,stream.width||640,stream.height||360,stream.rotation||0));
+      apply({...current,overlays:[...current.overlays,overlay]});
+      setWorkspace(w=>({...w,tool:'Overlay',selectedOverlay:current.overlays.length}));setNotice(`Overlay added at ${at.toFixed(2)} s.`);
+    }finally{setAddingOverlay(false);}
+  });
+  const pasteOverlay=useRef<(event:ClipboardEvent)=>void>(()=>{});
+  pasteOverlay.current=event=>{
+    const target=event.target as HTMLElement|null;
+    if(target?.closest('input,textarea,select,[contenteditable="true"]')||document.querySelector('dialog[open]'))return;
+    const file=imageFromClipboard(event.clipboardData);if(!file)return;
+    event.preventDefault();addOverlay(file);
+  };
+  useEffect(()=>{const handler=(event:ClipboardEvent)=>pasteOverlay.current(event);window.addEventListener('paste',handler);return()=>window.removeEventListener('paste',handler);},[]);
+  const saveDraft=useRef(()=>{});
+  saveDraft.current=()=>{if(!RecipeSchema.safeParse(recipe).success||!ExportSchema.safeParse(options).success){setDraftSaved(null);return;}setDraftSaved(writeDraft(storage,key,{version:1,performanceVersion:1,sourceId:source.id,history,cursor,options,time,workspace,projectName,projectId,presetId,updatedAt:new Date().toISOString()}));};
+  // Scrubbing and dragging must not serialize the full undo history on every pointer event.
+  useEffect(()=>{const timer=window.setTimeout(()=>saveDraft.current(),250);return()=>window.clearTimeout(timer);},[history,cursor,options,time,workspace,projectName,projectId,presetId,key]);
+  useEffect(()=>{const flush=()=>saveDraft.current();window.addEventListener('pagehide',flush);return()=>{window.removeEventListener('pagehide',flush);flush();};},[]);
   useEffect(()=>{
-    setWave([]);if(!artifact.media.streams.some(s=>s.type==='audio'))return;
+    setWave([]);setWaveLoading(false);if(!artifact.media.streams.some(s=>s.type==='audio'))return;
     const controller=new AbortController(),count=Math.min(2000,Math.max(100,Math.ceil(duration*40))),combined=Array(count).fill(0);
+    setWaveLoading(true);
     void(async()=>{let start=0;try{while(start<duration){
-      const length=Math.min(30,duration-start),data=await request<{peaks:number[];sampleRate:number;start:number;end:number;complete:boolean}>(`/sources/${source.id}/waveform?start=${start}&duration=${length}&points=${Math.max(1,Math.ceil(count*length/duration))}&track=${recipe.audio.track}`,{signal:controller.signal});
+      const length=Math.min(30,duration-start);let data:{peaks:number[];sampleRate:number;start:number;end:number;complete:boolean}|undefined;
+      // The server allows two preview operations at once; wait for a free slot instead of giving up.
+      for(let attempt=0;attempt<12&&!data;attempt++){
+        try{data=await request<{peaks:number[];sampleRate:number;start:number;end:number;complete:boolean}>(`/sources/${source.id}/waveform?start=${start}&duration=${length}&points=${Math.max(1,Math.ceil(count*length/duration))}&track=${recipe.audio.track}`,{signal:controller.signal});}
+        catch(e){if((e as {status?:number}).status!==429||controller.signal.aborted)throw e;await new Promise(resolve=>setTimeout(resolve,300+attempt*150));}
+      }
+      if(!data)throw new Error('Waveform is busy');
       if(controller.signal.aborted)return;
       data.peaks.forEach((v,i)=>{const index=Math.min(count-1,Math.floor((data.start+i/data.sampleRate)/duration*count));combined[index]=Math.max(combined[index],v)});setWave([...combined]);
       if(data.complete||data.end<=start)break;start=data.end;
-    }}catch{/* Playback remains available if waveform analysis is unavailable. */}})();
+    }}catch{/* Playback remains available if waveform analysis is unavailable. */}finally{if(!controller.signal.aborted)setWaveLoading(false);}})();
     return()=>controller.abort();
   },[source.id,recipe.audio.track]);
   const keptDuration=recipe.segments.reduce((n,s)=>n+s.out-s.in,0);
   const resizeValue=recipe.resize?`${recipe.resize.width}x${recipe.resize.height}`:'original';
   const baseWidth=recipe.crop?.width||stream?.width||1920,baseHeight=recipe.crop?.height||stream?.height||1080;
-  const rotated=recipe.rotate===90||recipe.rotate===270;
+  const rotated=angle(recipe.rotate-(stream?.rotation||0))%180===90;
   const imageWidth=rotated?baseHeight:baseWidth,imageHeight=rotated?baseWidth:baseHeight;
   const resolutionChoices=[1080,720,480].filter(height=>height<imageHeight).map(height=>({height,width:Math.max(2,Math.floor(imageWidth/imageHeight*height/2)*2)})).filter(({width})=>width<=7680);
+  const playbackOptions=<>    <details><summary>Playback source and original media details</summary><Field label="Playback source"><select value={previewId} onChange={e=>setPreviewId(e.target.value)}><option value={source.artifactId}>Original media</option>{proxies.map(p=><option key={p.id} value={p.id}>Proxy · {new Date(p.createdAt).toLocaleString()}</option>)}</select></Field><button aria-label="Generate playback proxy" disabled={!caps.user.policy.process} onClick={()=>void run(async()=>{await api.submit({type:'proxy',sourceId:source.id});await refresh();setNotice('Playback copy queued.');})}>Make playback copy</button><pre>{JSON.stringify(artifact?.media,null,2)}</pre></details>    <details><summary>Remove a source interval from all kept segments</summary><div className="form-grid"><NumberField label="Remove from (s)" value={removeStart} onChange={setRemoveStart}/><NumberField label="Remove until (s)" value={removeEnd} onChange={setRemoveEnd}/><button onClick={()=>void run(async()=>change(removeInterval(recipe,removeStart,removeEnd)))}>Remove interval</button></div></details>    <div className="actions"><button disabled={waveLoading} onClick={()=>void run(async()=>{waveAbort.current=new AbortController();setWaveLoading(true);try{const count=Math.min(2000,Math.ceil(duration*10)),combined=Array(count).fill(0);let start=0;while(start<duration){const data=await request<{peaks:number[];sampleRate:number;start:number;end:number;complete:boolean}>(`/sources/${source.id}/waveform?start=${start}&duration=30&points=${Math.max(1,Math.ceil(count*30/duration))}&track=${recipe.audio.track}`,{signal:waveAbort.current.signal});data.peaks.forEach((v,i)=>{const index=Math.min(count-1,Math.floor((data.start+i/data.sampleRate)/duration*count));combined[index]=Math.max(combined[index],v);});setWave([...combined]);setNotice(`Waveform generated through ${data.end.toFixed(1)} of ${duration.toFixed(1)} seconds`);if(data.complete||data.end<=start)break;start=data.end;}}finally{setWaveLoading(false);}})}>Load waveform</button>{waveLoading&&<button onClick={()=>waveAbort.current?.abort()}>Cancel waveform</button>}</div></>;
   const exportSummary=<>
-    <h2>Export</h2>
+    <h2 className="pane-title"><EditorIcon name="export" size={17}/>Export</h2>
+    <Field label="Cutting"><select aria-label="Cutting mode" value={options.cut==='auto'&&options.mode!=='auto'?'custom':options.cut} onChange={e=>{setPresetId(undefined);setExport({...options,cut:e.target.value as ExportOptions['cut'],...(e.target.value!=='exact'?{mode:'auto' as const}:{})});}}><option value="auto">Fast when possible</option><option value="copy">Lossless keyframe cut</option><option value="exact">Exact frame cut</option>{options.cut==='auto'&&options.mode!=='auto'&&<option value="custom">Current compression settings</option>}</select></Field>
+    <p className="muted">Lossless cuts snap to keyframes. Exact cuts take longer.</p>
     {stream&&<Field label="Video size"><select aria-label="Export resolution" value={resizeValue} onChange={e=>{const value=e.target.value;if(value==='original')change({...recipe,resize:undefined});else{const [width,height]=value.split('x').map(Number);change({...recipe,resize:{width,height}});}}}>
       <option value="original">Original size</option>
       {resolutionChoices.map(({height,width})=><option key={height} value={`${width}x${height}`}>{height}p</option>)}
       {recipe.resize&&!resolutionChoices.some(({width,height})=>`${width}x${height}`===resizeValue)&&<option value={resizeValue}>Custom ({recipe.resize.width} × {recipe.resize.height})</option>}
     </select></Field>}
     <Field label="File type"><select aria-label="Export file type" value={options.container} onChange={e=>setExport({...options,container:e.target.value as ExportOptions['container']})}><option value="mp4">MP4</option><option value="mkv">MKV</option></select></Field>
-    <Field label="Max size"><select aria-label="Export maximum file size" value={options.mode==='size'?String(options.maxBytes):'none'} onChange={e=>setExport(e.target.value==='none'?{...options,mode:'quality'}:{...options,mode:'size',maxBytes:Number(e.target.value)})}><option value="none">No size limit</option>{[10,20,50,100].map(size=><option key={size} value={size*1_000_000}>{size} MB</option>)}{options.mode==='size'&&![10,20,50,100].includes((options.maxBytes||0)/1_000_000)&&<option value={options.maxBytes}>{bytes(options.maxBytes||0)}</option>}</select></Field>
-    <div className="export-summary-details"><h3>Summary</h3><strong>{keptDuration.toFixed(2)} seconds</strong><span>{options.container.toUpperCase()}{options.mode==='size'?` · up to ${bytes(options.maxBytes||0)}`:''}</span><p>{plan?'Plan reviewed. Any edit will require a new review.':'Review the settings before exporting.'}</p></div>
-    <button onClick={()=>exportDialog.current?.showModal()}>Review settings</button>
+    <Field label="Max size"><select aria-label="Export maximum file size" value={options.mode==='size'?String(options.maxBytes):'none'} onChange={e=>setExport(e.target.value==='none'?{...options,mode:'auto'}:{...options,cut:options.cut==='copy'?'auto':options.cut,mode:'size',maxBytes:Number(e.target.value)})}><option value="none">No size limit</option>{[10,20,50,100].map(size=><option key={size} value={size*1_000_000}>{size} MB</option>)}{options.mode==='size'&&![10,20,50,100].includes((options.maxBytes||0)/1_000_000)&&<option value={options.maxBytes}>{bytes(options.maxBytes||0)}</option>}</select></Field>
+    <div className="export-summary-details"><h3>Output</h3><strong>{keptDuration.toFixed(2)} seconds</strong><span>{options.container.toUpperCase()}{recipe.resize?` · ${recipe.resize.height}p`:''}{options.mode==='size'?` · up to ${bytes(options.maxBytes||0)}`:''}</span></div>
+    <button className="export-summary-review" onClick={()=>exportDialog.current?.showModal()}><EditorIcon name="sliders" size={16}/>Review settings</button>
+    <details className="editor-project-settings"><summary><EditorIcon name="save" size={15}/>Project</summary>    <div className="form-grid"><Field label="Project name"><input value={projectName} onChange={e=>setProjectName(e.target.value)}/></Field><button disabled={!projectName.trim()} onClick={()=>void run(async()=>{const p=await api.saveProject({name:projectName,recipe,options},projectId);setProjectId(p.id);setNotice('Project saved.');})}><EditorIcon name="save" size={16}/>Save project</button><button aria-label="Export recipe JSON" onClick={()=>saveJson('edit-recipe.json',{recipe,options})}><EditorIcon name="download" size={16}/>Download edit settings</button></div></details>
   </>;
-  const inspector=<div className="editor-inspector"><div hidden={tool!=='Transform'}>    <Panel title="Image"><p className="muted">Crop uses the original file dimensions. Render a preview to see the changes.</p><Checkbox label="Crop" value={!!recipe.crop} onChange={v=>change({...recipe,crop:v?{x:0,y:0,width:stream?.width||640,height:stream?.height||360}:undefined})}/>{recipe.crop&&<div className="form-grid">{(['x','y','width','height'] as const).map(k=><NumberField key={k} label={`Crop ${k}`} value={recipe.crop![k]} min={k==='x'||k==='y'?0:1} step={1} onChange={v=>change({...recipe,crop:{...recipe.crop!,[k]:v}})}/>)}</div>}<Field label="Rotate"><select aria-label="Clockwise rotation" value={recipe.rotate} onChange={e=>change({...recipe,rotate:Number(e.target.value) as Recipe['rotate']})}>{[0,90,180,270].map(v=><option key={v} value={v}>{v}°</option>)}</select></Field><Checkbox label="Resize" value={!!recipe.resize} onChange={v=>change({...recipe,resize:v?{width:stream?.width||640,height:stream?.height||360}:undefined})}/>{recipe.resize&&<div className="form-grid"><NumberField label="Output width" value={recipe.resize.width} step={2} min={2} onChange={v=>change({...recipe,resize:{...recipe.resize!,width:v}})}/><NumberField label="Output height" value={recipe.resize.height} step={2} min={2} onChange={v=>change({...recipe,resize:{...recipe.resize!,height:v}})}/></div>}</Panel></div><div hidden={tool!=='Text'}>    <TextInspector recipe={recipe} selected={selectedText} select={selectText} change={change} time={time} duration={duration} advanced={<><Field label="Import SRT or WebVTT captions"><input type="file" accept=".srt,.vtt,text/vtt" onChange={e=>{const f=e.target.files?.[0];if(f)void run(async()=>{const captions=parseCaptions(await f.text());if(!captions.length)throw new Error('No timestamped caption cues found.');change({...recipe,captions});});e.target.value='';}}/></Field><CueEditor title="Caption" cues={recipe.captions} change={captions=>change({...recipe,captions})} time={time} duration={duration}/><Field label="Subtitle export"><select value={recipe.subtitleMode} onChange={e=>change({...recipe,subtitleMode:e.target.value as Recipe['subtitleMode']})}><option value="burn">Show in video</option><option value="soft">Selectable subtitles</option></select></Field><button disabled={!recipe.captions.length} onClick={()=>saveText('captions-source-time.srt',captionsToSrt(recipe.captions))}>Download captions</button></>}/></div><div hidden={tool!=='Audio'}>    <Panel title="Audio"><Field label="Audio"><select value={recipe.audio.mode} onChange={e=>audio({mode:e.target.value as Recipe['audio']['mode']})}><option value="keep">Keep original audio</option><option value="mute">Remove audio</option><option value="replace">Replace with another source</option><option value="mix">Mix with another file</option></select></Field><Field label="Audio track"><select value={recipe.audio.track} onChange={e=>audio({track:Number(e.target.value)})}>{(artifact?.media.streams.filter(s=>s.type==='audio')||[]).map((s,i)=><option key={s.index} value={i}>Track {i+1} · {s.codec} · {s.channels} channels</option>)}</select></Field>{['replace','mix'].includes(recipe.audio.mode)&&<><Field label="Additional audio source"><select value={recipe.audio.sourceId||''} onChange={e=>audio({sourceId:e.target.value||undefined})}><option value="">Select an imported audio source</option>{sources.filter(s=>artifacts.find(a=>a.id===s.artifactId)?.media.streams.some(v=>v.type==='audio')).map(s=><option value={s.id} key={s.id}>{s.name}</option>)}</select></Field><p>The added file starts at the beginning of your edit. It ends with the video.</p></>}<div className="form-grid"><Field label="Volume (1 = original)"><input aria-label="Volume multiplier" type="number" min={0} max={10} step=".1" value={recipe.audio.volume} onChange={e=>audio({volume:e.target.valueAsNumber||0})}/></Field><NumberField label="Fade in (s)" value={recipe.audio.fadeIn} min={0} max={60} onChange={fadeIn=>audio({fadeIn})}/><NumberField label="Fade out (s)" value={recipe.audio.fadeOut} min={0} max={60} onChange={fadeOut=>audio({fadeOut})}/></div><label className="check"><input type="checkbox" aria-label="Loudness normalization" checked={recipe.audio.normalize} onChange={e=>audio({normalize:e.target.checked})}/>Even out volume</label></Panel></div><div hidden={tool!=='Source'}><h2>Media</h2>    <details><summary>Playback source and original media details</summary><Field label="Playback source"><select value={previewId} onChange={e=>setPreviewId(e.target.value)}><option value={source.artifactId}>Original media</option>{proxies.map(p=><option key={p.id} value={p.id}>Proxy · {new Date(p.createdAt).toLocaleString()}</option>)}</select></Field><p>Playback copies use the same timing as the original. Exports use the original file.</p><button aria-label="Generate playback proxy" disabled={!caps.user.policy.process} onClick={()=>void run(async()=>{await api.submit({type:'proxy',sourceId:source.id});await refresh();setNotice('Playback copy queued. Choose it here when the job finishes.');})}>Make playback copy</button><pre>{JSON.stringify(artifact?.media,null,2)}</pre></details>    <details><summary>Remove a source interval from all kept segments</summary><div className="form-grid"><NumberField label="Remove from (s)" value={removeStart} onChange={setRemoveStart}/><NumberField label="Remove until (s)" value={removeEnd} onChange={setRemoveEnd}/><button onClick={()=>void run(async()=>change(removeInterval(recipe,removeStart,removeEnd)))}>Remove interval</button></div></details>    <div className="actions"><button disabled={waveLoading} onClick={()=>void run(async()=>{waveAbort.current=new AbortController();setWaveLoading(true);try{const count=Math.min(2000,Math.ceil(duration*10)),combined=Array(count).fill(0);let start=0;while(start<duration){const data=await request<{peaks:number[];sampleRate:number;start:number;end:number;complete:boolean}>(`/sources/${source.id}/waveform?start=${start}&duration=30&points=${Math.max(1,Math.ceil(count*30/duration))}&track=${recipe.audio.track}`,{signal:waveAbort.current.signal});data.peaks.forEach((v,i)=>{const index=Math.min(count-1,Math.floor((data.start+i/data.sampleRate)/duration*count));combined[index]=Math.max(combined[index],v);});setWave([...combined]);setNotice(`Waveform generated through ${data.end.toFixed(1)} of ${duration.toFixed(1)} seconds`);if(data.complete||data.end<=start)break;start=data.end;}}finally{setWaveLoading(false);}})}>Load waveform</button>{waveLoading&&<button onClick={()=>waveAbort.current?.abort()}>Cancel waveform</button>}</div></div><div hidden={tool!=='Project'}><h2>Project</h2><p className="muted">Drafts are saved on this device. Save a named project to reopen this edit from Library.</p>    <div className="form-grid"><Field label="Project name"><input value={projectName} onChange={e=>setProjectName(e.target.value)}/></Field><button disabled={!projectName.trim()} onClick={()=>void run(async()=>{const p=await api.saveProject({name:projectName,recipe,options},projectId);setProjectId(p.id);setNotice('Project saved.');})}>Save project</button><button aria-label="Export recipe JSON" onClick={()=>saveJson('edit-recipe.json',{recipe,options})}>Download edit settings</button></div></div></div>;
+  const inspector=<div className="editor-inspector"><div hidden={tool!=='Transform'}>    <TransformInspector recipe={recipe} change={change} width={stream?.width||640} height={stream?.height||360} sourceRotation={stream?.rotation||0}/></div><div hidden={tool!=='Text'}>    <TextInspector recipe={recipe} change={change} width={outputSize(recipe,stream?.width||640,stream?.height||360,stream?.rotation||0).width}/></div><div hidden={tool!=='Overlay'}>    <OverlayInspector recipe={recipe} change={change} selected={workspace.selectedOverlay} select={selectedOverlay=>setWorkspace(w=>({...w,selectedOverlay}))} time={time} duration={duration} adding={addingOverlay} addImage={addOverlay}/></div><div hidden={tool!=='Audio'}>    <AudioInspector recipe={recipe} audio={audio} artifact={artifact} sources={sources} artifacts={artifacts} duration={duration}/></div></div>;
   return <div className="editor-workspace" ref={setPreviewDialogHost}>
-    {document.getElementById('editor-header-actions')&&createPortal(<><span className="editor-save-state" role="status"><EditorIcon name="saved"/>{draftSaved===null?'Unsaved fields':draftSaved?'Saved':'Session draft'}</span><button className="primary editor-review-export" aria-label="Export…" onClick={()=>exportDialog.current?.showModal()}>Review export</button></>,document.getElementById('editor-header-actions')!)}
+    {document.getElementById('editor-header-actions')&&createPortal(<><span className="editor-save-state" data-state={draftSaved===null?'invalid':draftSaved?'saved':'session'} role="status"><EditorIcon name={draftSaved===null?'alert':'saved'} size={16}/>{draftSaved===null?'Unsaved fields':draftSaved?'Saved':'Session draft'}</span><button className="primary editor-review-export" aria-label="Export…" onClick={()=>exportDialog.current?.showModal()}><EditorIcon name="export" size={17}/>Review export</button></>,document.getElementById('editor-header-actions')!)}
 
-        <CutWorkspace exportSummary={exportSummary} viewerActions={<RenderedPreview dialogHost={previewDialogHost} recipe={recipe} options={options} presetId={presetId} jobs={jobs} artifacts={artifacts} allowed={caps.user.policy.process} refresh={refresh} onOpen={()=>setPauseSource(n=>n+1)}/>} tool={tool} setTool={setTool} selectedText={selectedText} selectText={selectText} sourceName={source.name} mediaWidth={stream?.width||1920} mediaHeight={stream?.height||1080} frameRate={stream?.frameRate} workspace={workspace} setWorkspace={setWorkspace} inspector={tool==='Cut'?undefined:inspector} pauseSignal={pauseSource} sourceId={source.id} previewId={previewId} duration={duration} recipe={recipe} change={change} time={time} setTime={setTime} wave={wave} thumbnails={<SourceThumbnails sourceId={source.id} duration={duration}/>} run={run} canUndo={cursor>0} canRedo={cursor<history.length-1} undo={()=>{setCursor(cursor-1);invalidatePlan();}} redo={()=>{setCursor(cursor+1);invalidatePlan();}}/>
+        <CutWorkspace playbackOptions={playbackOptions} exportSummary={exportSummary} viewerActions={<RenderedPreview dialogHost={previewDialogHost} recipe={recipe} options={options} presetId={presetId} jobs={jobs} artifacts={artifacts} allowed={caps.user.policy.process} refresh={refresh} onOpen={()=>setPauseSource(n=>n+1)}/>} tool={tool} setTool={setTool} sourceName={source.name} mediaWidth={stream?.width||1920} mediaHeight={stream?.height||1080} mediaRotation={stream?.rotation||0} frameRate={stream?.frameRate} workspace={workspace} setWorkspace={setWorkspace} inspector={tool==='Cut'?undefined:inspector} pauseSignal={pauseSource} sourceId={source.id} previewId={previewId} duration={duration} recipe={recipe} change={change} time={time} setTime={setTime} wave={wave} waveLoading={waveLoading} hasAudio={artifact.media.streams.some(s=>s.type==='audio')} thumbnails={<SourceThumbnails sourceId={source.id} duration={duration}/>} run={run} canUndo={cursor>0} canRedo={cursor<history.length-1} undo={()=>{setCursor(cursor-1);invalidatePlan();}} redo={()=>{setCursor(cursor+1);invalidatePlan();}}/>
     <dialog ref={exportDialog} className="export-dialog" aria-label="Export media">
-      <div className="dialog-heading"><strong>Review and export</strong><button onClick={()=>exportDialog.current?.close()}>Close export</button></div>
+      <div className="dialog-heading"><strong><EditorIcon name="export" size={20}/>Review and export</strong><button className="icon-button" aria-label="Close export" title="Close" onClick={()=>exportDialog.current?.close()}><EditorIcon name="close" size={18}/></button></div>
       <Panel title="Export settings">
         <Field label="Saved preset"><select aria-label="Apply portable preset" value="" onChange={e=>{
           const item=presetList.find(p=>(p.id||p.preset?.id)===e.target.value);
@@ -85,43 +138,75 @@ export function Editor({source,artifact,sources,artifacts,jobs,caps,project,run,
           <p className="muted">{keptDuration.toFixed(3)} seconds · {options.container.toUpperCase()} · original file kept</p>
         </div>
         <details><summary>Advanced encoding settings</summary><ExportFields options={options} change={setExport}/></details>
-        <div className="actions">
-          <button aria-label="Resolve export plan" disabled={!caps.user.policy.process} onClick={()=>void run(async()=>{
-            const revision=++planRevision.current;setPlan(undefined);const resolved=await api.plan(recipe,options,presetId);if(revision===planRevision.current)setPlan(resolved);
-          })}>Review settings</button>
-          <button aria-label="Export using reviewed plan" disabled={!plan||!caps.user.policy.process} onClick={()=>void run(async()=>{
-            await api.submit({type:'export',recipe,options,...(presetId?{presetId}:{})});await refresh();setNotice('Export added to Jobs. Download it when processing finishes.');
-          })} className="primary">Export video</button>
-        </div>
+        <Checkbox label="Fully verify lossless exports (slower)" value={options.copyValidation==='full'} onChange={value=>setExport({...options,copyValidation:value?'full':'fast'})}/>
+        {!plan&&<p className="export-step-hint"><EditorIcon name="info" size={16} tone="info"/>Review the settings first to check how the export will be processed, then export.</p>}
         {plan&&<div className="plan">
-          <h3>Ready to export</h3>
-          <p>{plan.duration.toFixed(3)} seconds · {options.container.toUpperCase()}. {plan.strategy==='copy'?'Keeps the original video quality. Cut positions may move to nearby frames.':'Renders your edited picture and sound.'}</p>
+          <h3><EditorIcon name="saved" size={18} tone="ok"/>Ready to export</h3>
+          <p>{plan.duration.toFixed(3)} seconds · {options.container.toUpperCase()}</p>
           {plan.warnings.length>0&&<ul className="export-warnings">{plan.warnings.map((warning,i)=><li key={i}>{warning}</li>)}</ul>}
           <details><summary>Processing details</summary>
             <p>{plan.strategy==='copy'?'Stream copy':'Exact re-encode'} · {plan.encoder}</p>
             <p>Video: {plan.video}. Audio: {plan.audio}. Maximum attempts: {plan.attempts}.</p>
             {plan.reasons.length>0&&<ul>{plan.reasons.map((reason,i)=><li key={i}>{reason}</li>)}</ul>}
-            <p>Resolved cut positions: {plan.segments.map(s=>s.in.toFixed(6)+' to '+s.out.toFixed(6)).join(', ')} seconds</p>
+            <p>Requested cut positions: {plan.segments.map(s=>s.in.toFixed(6)+' to '+s.out.toFixed(6)).join(', ')} seconds{plan.strategy==='copy'?'; keyframe positions resolve during export.':'.'}</p>
           </details>
         </div>}
+        <div className="actions">
+          <button aria-label="Resolve export plan" disabled={!caps.user.policy.process} onClick={()=>void run(async()=>{
+            const revision=++planRevision.current;setPlan(undefined);const resolved=await api.plan(recipe,options,presetId);if(revision===planRevision.current)setPlan(resolved);
+          })}><EditorIcon name="sliders" size={16}/>Review settings</button>
+          <button aria-label="Export using reviewed plan" disabled={!plan||!caps.user.policy.process} onClick={()=>void run(async()=>{
+            await api.submit({type:'export',recipe,options,...(presetId?{presetId}:{})});await refresh();setNotice('Export queued.');
+          })} className="primary"><EditorIcon name="export" size={16}/>Export video</button>
+        </div>
       </Panel>
     </dialog>
-    <details className="completed-results" hidden={!exports.length}><summary>Completed export previews ({exports.length})</summary>    {exports.length>0&&<Panel title="Completed export previews"><p>Inspect these actual validated files to check the final text, caption, audio, and transform rendering.</p>{exports.map(a=><article key={a.id}><h3>{a.name} · {bytes(a.bytes)}</h3><video controls src={contentUrl(a.id)} preload="metadata"/><ArtifactActions artifact={a} run={run} setNotice={setNotice}/></article>)}</Panel>}</details>
+    <details className="completed-results" hidden={!exports.length}><summary>Completed export previews ({exports.length})</summary>    {exports.length>0&&<Panel title="Completed export previews">{exports.map(a=><article key={a.id}><h3>{a.name} · {bytes(a.bytes)}</h3><video controls src={contentUrl(a.id)} preload="metadata"/><ArtifactActions artifact={a} run={run} setNotice={setNotice}/></article>)}</Panel>}</details>
   </div>;
 }
 
-export function CueEditor({title,cues,change,time,duration}:{title:string;cues:Recipe['text'];change:(v:Recipe['text'])=>void;time:number;duration:number}) {
-  return <div className="cue-list"><h3>{title}s ({cues.length})</h3>{cues.map((c,i)=><div className="cue" key={i}><div className="form-grid"><NumberField label={`${title} ${i+1} in`} value={c.in} onChange={v=>change(cues.map((a,n)=>n===i?{...a,in:v}:a))}/><NumberField label={`${title} ${i+1} out`} value={c.out} onChange={v=>change(cues.map((a,n)=>n===i?{...a,out:v}:a))}/></div><Field label={`${title} ${i+1} text`}><textarea value={c.text} onChange={e=>change(cues.map((a,n)=>n===i?{...a,text:e.target.value}:a))}/></Field><button onClick={()=>change(cues.filter((_,n)=>n!==i))}>Remove {title.toLowerCase()}</button></div>)}<button onClick={()=>change([...cues,{in:time,out:Math.min(time+2,duration),text:''}])}>Add {title.toLowerCase()} at playhead</button></div>;
+
+
+const thumbCache=new Map<string,string>();
+const TILE_WIDTH=96,MAX_TILES=48;
+
+// One tile per slice of the timeline's current width, filled progressively with small JPEGs.
+export function SourceThumbnails({sourceId,duration}:{sourceId:string;duration:number}) {
+  const root=useRef<HTMLDivElement>(null);
+  const [tiles,setTiles]=useState(4),[urls,setUrls]=useState<Record<number,string>>({}),[error,setError]=useState(''),[revision,setRevision]=useState(0);
+  useEffect(()=>{
+    const element=root.current;if(!element)return;
+    const measure=()=>setTiles(Math.max(4,Math.min(MAX_TILES,Math.ceil(element.clientWidth/TILE_WIDTH))));
+    measure();const observer=new ResizeObserver(measure);observer.observe(element);return()=>observer.disconnect();
+  },[]);
+  useEffect(()=>{
+    const controller=new AbortController();let active=true;setError('');
+    const key=(index:number)=>`${sourceId}:${tiles}:${index}`;
+    const have:Record<number,string>={};for(let i=0;i<tiles;i++){const cached=thumbCache.get(key(i));if(cached)have[i]=cached;}
+    setUrls(have);
+    const order=Array.from({length:tiles},(_,i)=>i).filter(i=>!have[i]).sort((a,b)=>Math.abs(a-tiles/2)-Math.abs(b-tiles/2));
+    const load=async(index:number)=>{
+      const pts=Math.min(Math.max(0,duration-.05),(index+.5)/tiles*duration);
+      for(let attempt=0;attempt<6;attempt++){
+        const response=await fetch(`/api/v1/sources/${sourceId}/thumb?pts=${pts.toFixed(3)}`,{credentials:'same-origin',signal:controller.signal});
+        if(response.status===429){await new Promise(resolve=>setTimeout(resolve,300+attempt*200));continue;}
+        if(!response.ok)throw new Error(`Thumbnail request failed (${response.status}).`);
+        const url=URL.createObjectURL(await response.blob());thumbCache.set(key(index),url);
+        if(active)setUrls(current=>({...current,[index]:url}));return;
+      }
+      throw new Error('Thumbnails are busy. Try again in a moment.');
+    };
+    void(async()=>{try{
+      const workers=[0].map(async()=>{while(active&&order.length){const index=order.shift()!;await load(index);}});
+      await Promise.all(workers);
+    }catch(e){if(active&&!(e instanceof DOMException&&e.name==='AbortError'))setError(e instanceof Error?e.message:String(e));}})();
+    return()=>{active=false;controller.abort();};
+  },[sourceId,duration,tiles,revision]);
+  return <><div className="thumbs" ref={root}>{Array.from({length:tiles},(_,i)=>urls[i]
+    ?<img key={i} src={urls[i]} alt={`Source thumbnail at ${((i+.5)/tiles*duration).toFixed(2)} seconds`}/>
+    :<span key={i} className="thumb-skeleton" aria-hidden="true"/>)}</div>{error&&<p className="error-text">{error} <button onClick={()=>setRevision(revision+1)}>Retry thumbnails</button></p>}</>;
 }
 
-export function SourceThumbnails({sourceId,duration}:{sourceId:string;duration:number}) {
-  const [thumbnails,setThumbnails]=useState<{time:number;url:string}[]>([]),[error,setError]=useState(''),[revision,setRevision]=useState(0);
-  useEffect(()=>{const controller=new AbortController(),urls:string[]=[];let active=true;setThumbnails([]);setError('');
-    void(async()=>{try{for(const fraction of [0,.25,.5,.75]){let response:Response|undefined;for(let attempt=0;attempt<4;attempt++){response=await fetch(`/api/v1/sources/${sourceId}/frame?pts=${duration*fraction}`,{credentials:'same-origin',signal:controller.signal});if(response.status!==429)break;await new Promise(resolve=>setTimeout(resolve,400));}if(!response?.ok)throw new Error(`Thumbnail request failed (${response?.status}).`);const url=URL.createObjectURL(await response.blob());urls.push(url);if(active)setThumbnails(current=>[...current,{time:duration*fraction,url}]);}}catch(e){if(active)setError(e instanceof Error?e.message:String(e));}})();
-    return()=>{active=false;controller.abort();urls.forEach(url=>URL.revokeObjectURL(url));};
-  },[sourceId,duration,revision]);
-  return <><div className="thumbs">{thumbnails.map(t=><img key={t.time} src={t.url} alt={`Source thumbnail at ${t.time.toFixed(2)} seconds`}/>)}</div>{error&&<p className="error-text">{error} <button onClick={()=>setRevision(revision+1)}>Retry thumbnails</button></p>}</>;
-}
 
 export function ExportFields({options:o,change}:{options:ExportOptions;change:(o:ExportOptions)=>void}) {
   const update=(patch:Partial<ExportOptions>)=>change({...o,...patch});

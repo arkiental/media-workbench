@@ -3,6 +3,7 @@ import net from 'node:net';
 import { Transform, type Duplex } from 'node:stream';
 import { lookup } from 'node:dns/promises';
 import ipaddr from 'ipaddr.js';
+import { ByteRateBudget } from './rate.ts';
 export function isPublicAddress(address:string){try {let a=ipaddr.parse(address);if(a.kind()==='ipv6'&&(a as ipaddr.IPv6).isIPv4MappedAddress())a=(a as ipaddr.IPv6).toIPv4Address();return a.range()==='unicast';}catch{return false;}}
 export async function validateDestination(raw:string,allowedSites:string[]=[],testOrigin?:string){
  const url=new URL(raw);if(!['http:','https:'].includes(url.protocol)||url.username||url.password)throw Error('Only HTTP(S) URLs without embedded credentials are allowed');
@@ -15,14 +16,14 @@ export async function validateDestination(raw:string,allowedSites:string[]=[],te
 }
 /** DNS-pinned filtering proxy for every downloader connection. Shared mode additionally requires mandatory worker egress isolation. */
 export async function createEgressProxy(maxBytes:number,signal:AbortSignal,testOrigin?:string,bytesPerSecond=50*1024*1024){
- const sockets=new Set<Duplex>();const streams=new Set<Transform>();let bytes=0,nextAt=Date.now();let violation='';
- const limit=(close:()=>void)=>{let timer:NodeJS.Timeout;const stream=new Transform({transform(chunk,encoding,callback){bytes+=chunk.length;if(bytes>maxBytes){violation='Download transfer exceeded byte policy';callback(Error(violation));return;}const now=Date.now();nextAt=Math.max(now,nextAt)+chunk.length/bytesPerSecond*1000;timer=setTimeout(()=>callback(null,chunk),Math.max(0,nextAt-now));},destroy(error,callback){clearTimeout(timer);callback(error);}});streams.add(stream);stream.on('error',close);stream.on('close',()=>streams.delete(stream));return stream;};
+ const sockets=new Set<Duplex>();const streams=new Set<Transform>();let bytes=0;const budget=new ByteRateBudget(bytesPerSecond);let violation='';
+ const limit=(close:()=>void)=>{let timer:NodeJS.Timeout;const stream=new Transform({transform(chunk,encoding,callback){bytes+=chunk.length;if(bytes>maxBytes){violation='Download transfer exceeded byte policy';callback(Error(violation));return;}const delay=budget.delay(chunk.length);if(delay<1)callback(null,chunk);else timer=setTimeout(()=>callback(null,chunk),delay);},destroy(error,callback){clearTimeout(timer);callback(error);}});streams.add(stream);stream.on('error',close);stream.on('close',()=>streams.delete(stream));return stream;};
  const server=http.createServer(async(req,res)=>{
   try{
    const {url,address}=await validateDestination(req.url||'',[],testOrigin);
    if(violation)throw Error(violation);if(url.protocol!=='http:'||!['GET','HEAD','POST','OPTIONS'].includes(req.method||''))throw Error('Unsupported proxy operation');
    const upstream=http.request({hostname:address,port:url.port||80,method:req.method,path:url.pathname+url.search,headers:{...req.headers,host:url.host},timeout:120000},remote=>{res.writeHead(remote.statusCode||502,remote.headers);const inbound=limit(()=>{upstream.destroy();res.destroy();});remote.on('error',()=>inbound.destroy());res.on('close',()=>inbound.destroy());remote.pipe(inbound).pipe(res);});
-   upstream.on('socket',s=>{sockets.add(s);s.on('close',()=>sockets.delete(s));});upstream.on('timeout',()=>upstream.destroy());upstream.on('error',()=>{if(!res.headersSent)res.writeHead(502);res.end();});const outbound=limit(()=>{upstream.destroy();res.destroy();});req.on('aborted',()=>upstream.destroy());res.on('close',()=>{upstream.destroy();outbound.destroy();});req.pipe(outbound).pipe(upstream);
+   upstream.on('socket',s=>{if(!sockets.has(s)){sockets.add(s);s.once('close',()=>sockets.delete(s));}});upstream.on('timeout',()=>upstream.destroy());upstream.on('error',()=>{if(!res.headersSent)res.writeHead(502);res.end();});const outbound=limit(()=>{upstream.destroy();res.destroy();});req.on('aborted',()=>upstream.destroy());res.on('close',()=>{upstream.destroy();outbound.destroy();});req.pipe(outbound).pipe(upstream);
   }catch{res.writeHead(403);res.end('Network destination blocked');}
  });
  server.on('connect',async(req,client,head)=>{

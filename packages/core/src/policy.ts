@@ -13,7 +13,7 @@ export function enforceJob(request:JobRequest,policy:Policy){
  if(request.type==='export'){
   const {recipe:r,options:o}=request;
   if(policy.allowedOutputCodecs?.length&&o.cut!=='copy'&&!policy.allowedOutputCodecs.includes(o.codec))throw Error('Output codec is not allowed by policy');
-  if(!policy.expensiveFilters&&(r.crop||r.resize||r.rotate||r.text.length||r.captions.length||r.audio.normalize||r.audio.volume!==1||r.audio.fadeIn||r.audio.fadeOut||r.audio.mode==='replace'||r.audio.mode==='mix'||o.cut!=='copy'))throw Error('Expensive processing is not permitted');
+  if(!policy.expensiveFilters&&(r.crop||r.resize||r.rotate||r.caption?.text.trim()||r.text.length||r.captions.length||r.overlays.length||r.audio.normalize||r.audio.volume!==1||r.audio.fadeIn||r.audio.fadeOut||r.audio.mode==='replace'||r.audio.mode==='mix'||o.cut!=='copy'))throw Error('Expensive processing is not permitted');
   if(o.maxBytes&&o.maxBytes>policy.maxOutputBytes)throw Error('Output limit exceeds policy');
   if(r.resize&&r.resize.width*r.resize.height>policy.maxPixels)throw Error('Output resolution exceeds policy');
   if(r.segments.reduce((sum,s)=>sum+s.out-s.in,0)>policy.maxDuration)throw Error('Output duration exceeds policy');

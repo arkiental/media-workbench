@@ -1,10 +1,10 @@
 import { z } from 'zod';
 import { RecipeSchema, ExportSchema, type Recipe } from '../../../packages/contracts/src/index';
 
-const WorkspaceSchema=z.object({selected:z.number().int().min(0),zoom:z.number().min(1).max(20),snap:z.boolean(),tool:z.enum(['Cut','Transform','Text','Audio','Source','Project']).optional(),selectedText:z.number().int().min(0).optional(),viewerFit:z.enum(['fit','fill']).optional()});
+const WorkspaceSchema=z.object({selected:z.number().int().min(0),zoom:z.number().min(1).max(20),snap:z.boolean(),tool:z.enum(['Cut','Transform','Text','Overlay','Audio','Source','Project']).optional(),selectedText:z.number().int().min(0).optional(),selectedOverlay:z.number().int().min(0).optional(),viewerFit:z.enum(['fit','fill']).optional()});
 export type WorkspaceState=z.infer<typeof WorkspaceSchema>;
 const DraftSchema=z.object({
-  version:z.literal(1),sourceId:z.string(),projectId:z.string().optional(),projectName:z.string(),
+  version:z.literal(1),performanceVersion:z.literal(1).optional(),sourceId:z.string(),projectId:z.string().optional(),projectName:z.string(),
   history:z.array(z.unknown()).min(1).max(100),cursor:z.number().int().min(0),
   options:ExportSchema,time:z.number().finite().min(0),workspace:WorkspaceSchema,
   presetId:z.string().optional(),updatedAt:z.string()
