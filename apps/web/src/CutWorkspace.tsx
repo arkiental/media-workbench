@@ -148,9 +148,11 @@ export function CutWorkspace({viewerActions,exportSummary,tool,setTool,playbackO
     let target=Math.max(0,Math.min(duration,value));
     // Show the user's seek immediately; indexed snapping can refine it when ready.
     setElementTime(target);reportTime(target);setInspectFrame(exact?target:undefined);
-    if(snap&&!exact){const frames=await index(target);if(frames.length)target=frames.reduce((a,b)=>Math.abs(b.pts-target)<Math.abs(a.pts-target)?b:a,frames[0]).pts;}
+    // Scrubbing must not enqueue a server decode for every pointer event. The
+    // browser seeks directly; explicit keyframe/inspection actions still use the index.
+    if(snap&&!exact){const [n,d]=(frameRate||'30/1').split('/').map(Number),fps=n/(d||1);if(Number.isFinite(fps)&&fps>0)target=Math.round(target*fps)/fps;}
     if(request!==generation.current)return;
-    target=Math.max(0,Math.min(duration,target));
+    target=Math.max(0,Math.min(Math.max(0,duration-.001),target));
     setElementTime(target);
     reportTime(target);setInspectFrame(exact?target:undefined);
   };
@@ -443,7 +445,7 @@ export function CutWorkspace({viewerActions,exportSummary,tool,setTool,playbackO
             onPlay={()=>{generation.current++;setPlaying(true);setInspectFrame(undefined);}}
             onPause={e=>{if(e.currentTarget.paused){setPlaying(false);stopPreview();}}} onEnded={()=>{setPlaying(false);stopPreview();}}
             onSeeking={e=>{if(expectedSeek.current===undefined||Math.abs(e.currentTarget.currentTime-expectedSeek.current)>1e-5){generation.current++;stopPreview();setInspectFrame(undefined);}}}
-            onSeeked={e=>{expectedSeek.current=undefined;pendingStep.current=undefined;applyGain(e.currentTarget.currentTime);reportTime(e.currentTarget.currentTime);}}
+            onSeeked={e=>{if(expectedSeek.current!==undefined&&Math.abs(e.currentTarget.currentTime-expectedSeek.current)>.05){e.currentTarget.currentTime=expectedSeek.current;return;}expectedSeek.current=undefined;pendingStep.current=undefined;applyGain(e.currentTarget.currentTime);reportTime(e.currentTarget.currentTime);}}
             onTimeUpdate={e=>{if(e.currentTarget.readyState>=1&&!e.currentTarget.seeking)reportTime(e.currentTarget.currentTime);}}
             onError={()=>{setReady(false);setPlaying(false);stopPreview();setError('This browser could not decode the preview. Generate and select a playback proxy below.');}}/>
           {inspectFrame!==undefined&&<img className="cut-frame" src={`/api/v1/sources/${sourceId}/frame?pts=${inspectFrame}`} alt={`Source decoded frame at ${inspectFrame.toFixed(6)} seconds`}/>}

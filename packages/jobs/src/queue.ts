@@ -6,7 +6,7 @@ import { Store } from './store.ts';
 import { enforceJob, enforceMedia } from '../../core/src/policy.ts';
 import { createProxy, exportMedia, validateMedia } from '../../media/src/index.ts';
 import { downloadMedia, redactError } from '../../../apps/server/src/download.ts';
-import { managedPath, overlayPath, publish, registerSource } from '../../../apps/server/src/storage.ts';
+import { managedPath, overlayPath, publish, registerSource, safeName, saveDownloadCopy } from '../../../apps/server/src/storage.ts';
 import { withCookies } from '../../../apps/server/src/credentials.ts';
 import { WORKER_SCRATCH_OVERHEAD_BYTES, type IsolatedWorker } from '../../../apps/server/src/worker.ts';
 export class Queue {
@@ -47,7 +47,7 @@ export class Queue {
    if(this.worker){const ids=request.type==='export'?[request.recipe.sourceId,request.recipe.audio.sourceId]:request.type==='proxy'?[request.sourceId]:[];const inputs=[];for(const id of ids){if(!id)continue;const s=this.store.get<Source>('source',id,user.id);if(!s)throw Error('Source not found');inputs.push(await managedPath(this.store,s.artifactId));}inputs.push(...Object.values(overlayImages));ctx=await this.worker.context(ctx,inputs);}
    let staged:string,name:string,kind:Artifact['kind'],sourceId:string|undefined,verifiedMedia:MediaInfo|undefined;
    if(request.type==='download'){
-    const result=await withCookies(this.store,user.id,request.download.cookieId,workDir,opts=>downloadMedia(request.download,this.tools,{...ctx,...opts,policy:{...user.policy,maxInputBytes:Math.min(user.policy.maxInputBytes,remaining)},testOrigin:this.testOrigin}));staged=result.path;name=result.name;kind='download';
+    const result=await withCookies(this.store,user.id,request.download.cookieId,workDir,opts=>downloadMedia(request.download,this.tools,{...ctx,...opts,policy:{...user.policy,maxInputBytes:Math.min(user.policy.maxInputBytes,remaining)},testOrigin:this.testOrigin}));staged=result.path;name=request.download.fileName?safeName(request.download.fileName.replace(/\.(mp4|mkv|webm|mov|mp3|m4a|opus|ogg|wav|flac)$/i,''))+path.extname(result.name):result.name;kind='download';
    } else {
     const sid=request.type==='export'?request.recipe.sourceId:request.sourceId;const source=this.store.get<Source>('source',sid,user.id);if(!source)throw Error('Source not found');const original=this.store.get<Artifact>('artifact',source.artifactId,user.id);if(!original)throw Error('Original artifact not found');
     const input=await managedPath(this.store,original.id);enforceMedia(original.media,user.policy);this.store.lease(original.id,(user.policy.maxRuntimeSeconds+60)*1000);sourceId=source.id;
@@ -63,7 +63,8 @@ export class Queue {
    if(media.size>remaining)throw Error('Storage quota exceeded');if(controller.signal.aborted)throw Error('Operation cancelled');
    artifact=await publish(this.store,staged,user.id,name,media,kind,job.id,sourceId,reservation);artifact.expiresAt=new Date(Date.now()+user.policy.retentionHours*3600000).toISOString();this.store.put('artifact',artifact.id,user.id,artifact);
    if(request.type==='download')sourceId=registerSource(this.store,artifact,request.download.url).id;
-   this.store.updateJob(job.id,{state:'completed',artifactId:artifact.id,sourceId,progress:1,message:'Output validated and published'});
+   let savedPath:string|undefined,savingError:string|undefined;if(request.type==='download'&&request.download.destinationId){try{savedPath=await saveDownloadCopy(this.store,artifact,request.download.destinationId);}catch(error){savingError=(error as Error).message;}}
+   this.store.updateJob(job.id,{state:'completed',artifactId:artifact.id,sourceId,progress:1,savedPath,savingError,message:savingError?'Ready in Library, but saving to the selected folder failed: '+savingError:savedPath?'Saved to '+savedPath:'Output validated and published'});
   }catch(error){this.store.updateJob(job.id,{state:timedOut?'failed':controller.signal.aborted?'cancelled':'failed',error:timedOut?'Job exceeded total runtime policy':controller.signal.aborted?undefined:redactError(error),message:controller.signal.aborted?'Owned tools stopped; no partial artifact published':undefined});}
   finally{clearTimeout(deadline);this.store.updateJob(job.id,{resourceUsage:{elapsedMs:Date.now()-started}});const root=path.resolve(this.store.dataDir,'work');const target=path.resolve(workDir);if(path.dirname(target)===root)await rm(target,{recursive:true,force:true}).catch(()=>{});reservation.release();}
  }

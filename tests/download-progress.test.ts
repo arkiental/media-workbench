@@ -129,13 +129,15 @@ test('inspection and download retain PATH FFmpeg discovery and forward explicit 
       assert.equal(inspected.entries[0].formats[0].id, 'video');
       const downloaded = await downloadMedia(request, tools, context);
       assert.deepEqual(await readFile(downloaded.path), fixtureBytes);
-      assert.equal(calls.length, 2);
+      assert.equal(calls.filter(args=>args.includes('--dump-single-json')).length,1);
+      assert.equal(calls.filter(args=>args.includes('--write-thumbnail')).length,1);
+      assert.equal(calls.filter(args=>args.includes('--progress-template')).length,1);
       for (const args of calls) {
         const index = args.indexOf('--ffmpeg-location');
         if (binary === path.basename(binary)) assert.equal(index, -1, 'a PATH command must not become the empty work directory');
         else { assert.ok(index >= 0); assert.equal(args[index + 1], path.resolve(binary)); }
       }
-      const args = calls[1];
+      const args = calls.find(args=>args.includes('--progress-template'))!;
       assert.ok(args.lastIndexOf('--progress') > args.indexOf('--no-progress'), 'machine progress overrides the metadata quiet default');
       assert.ok(args.includes('--newline'));
       assert.equal(args[args.indexOf('--progress-delta') + 1], '0.25');

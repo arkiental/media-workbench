@@ -1,5 +1,5 @@
 'use strict';
-const { app,BrowserWindow,ipcMain,dialog,shell,clipboard,nativeImage }=require('electron');
+const { app,BrowserWindow,ipcMain,dialog,shell,clipboard,nativeImage,Menu }=require('electron');
 const { spawn }=require('node:child_process');
 const fs=require('node:fs/promises');
 const path=require('node:path');
@@ -38,6 +38,13 @@ async function installSession() {
 function installIPC() {
   const bindingsPath=path.join(app.getPath('userData'),'local-actions.json');
   register('native:capabilities',capabilities);
+  mainWindow.webContents.on('context-menu',(_event,params)=>{if(params.isEditable)Menu.buildFromTemplate([{role:'undo'},{role:'redo'},{type:'separator'},{role:'cut'},{role:'copy'},{role:'paste'},{type:'separator'},{role:'selectAll'}]).popup({window:mainWindow});});
+  register('native:choose-download-folder',async()=>{
+    const selected=await dialog.showOpenDialog(mainWindow,{title:'Choose download folder',properties:['openDirectory','createDirectory']});
+    if(selected.canceled||!selected.filePaths[0])return;
+    const response=await fetch(`${origin}/api/v1/desktop/download-folder`,{method:'POST',headers:{authorization:`Bearer ${token}`,'x-desktop-secret':desktopSecret,'content-type':'application/json'},body:JSON.stringify({path:selected.filePaths[0]})});
+    if(!response.ok)throw Error('Cannot use this download folder');return response.json();
+  });
   register('native:copy-file',async id=>{const item=await resolveArtifact(id);await native.windowsFileClipboard(item.path);});
   register('native:copy-path',async id=>{const item=await resolveArtifact(id);await clipboard.writeText(item.path);if(await clipboard.readText()!==item.path)throw new Error('Clipboard did not retain the path.');});
   register('native:reveal',async id=>{const item=await resolveArtifact(id);shell.showItemInFolder(item.path);});

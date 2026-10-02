@@ -3,7 +3,7 @@ import cookie from '@fastify/cookie';
 import fastifyStatic from '@fastify/static';
 import { z } from 'zod';
 import { createReadStream, createWriteStream, existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile, realpath } from 'node:fs/promises';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
@@ -13,7 +13,7 @@ import { Queue } from '../../../packages/jobs/src/queue.ts';
 import { defaultPolicy, enforceJob, enforceMedia } from '../../../packages/core/src/policy.ts';
 import { defaultPreset, effectiveOptions, migratePreset } from '../../../packages/core/src/presets.ts';
 import { Id, JobRequestSchema, DownloadSchema, RecipeSchema, ExportSchema, type OverlayImage, type Recipe, type Artifact, type Source, type JobRequest, type ToolPaths, type User, type Policy, type Preset, type Project, type EncoderCapability, type Capabilities } from '../../../packages/contracts/src/index.ts';
-import { discoverTools, toolVersions, testEncoders, validateMedia, probeImage, frameIndex, extractFrame, extractThumbnail, waveform, planExport } from '../../../packages/media/src/index.ts';
+import { discoverTools, toolVersions, testEncoders, validateMedia, inspectLocalImport, probeImage, frameIndex, extractFrame, extractThumbnail, waveform, planExport } from '../../../packages/media/src/index.ts';
 import { inspectDownload, redactError } from './download.ts';
 import { importCookies, registerBrowser, forgetCookies, withCookies } from './credentials.ts';
 import { managedPath, overlayPath, publish, registerSource, retention, nativeCopy, deleteArtifact, artifactContentType } from './storage.ts';
@@ -37,9 +37,18 @@ export async function createServer(options:ServerOptions){
  if((options.shared||exposed)&&(!options.shared||!options.workerConfig||!options.ownerToken||!options.publicOrigin?.startsWith('https://')||options.testOrigin))throw Error('Shared hosting is disabled: require isolated workers, explicit owner credential and HTTPS public origin');
  if(options.shared&&(!options.workerConfig?.proxyPath||!options.workerConfig.relayPath||options.workerConfig.proxyVolume))throw Error('Shared hosting is disabled: per-operation mandatory proxy is required');
  if(options.shared){const publicUrl=new URL(options.publicOrigin!);if(publicUrl.protocol!=='https:'||publicUrl.username||publicUrl.password||publicUrl.pathname!=='/'||publicUrl.search||publicUrl.hash)throw Error('Shared public origin must be a bare HTTPS origin');}
+ const desktopLocal=!!options.desktopSecret&&!options.shared&&!options.tunnelPrototype;
  const store=new Store(options.dataDir);const tools=options.tools||await discoverTools();
  const worker=options.workerConfig?new IsolatedWorker({...options.workerConfig,ownerLabel:createHash('sha256').update(store.dataDir).digest('hex').slice(0,24)}):undefined;if(worker)await worker.recover();
  const owner=store.users().find(u=>u.role==='owner')||store.createUser('Local owner','owner');
+ if(desktopLocal&&!store.setting('desktop-large-imports-v1',false)){
+  const policy={...owner.policy};
+  if(policy.maxInputBytes===1024**3)policy.maxInputBytes=20*1024**3;
+  if(policy.maxTransferBytes===2*1024**3)policy.maxTransferBytes=20*1024**3;
+  if(policy.diskBytes===10*1024**3)policy.diskBytes=100*1024**3;
+  if(policy.maxDuration===7200)policy.maxDuration=86400;
+  store.updateUser(owner.id,policy);store.setSetting('desktop-large-imports-v1',true);
+ }
  // Prototype only: a temporary Cloudflare quick tunnel serves visitors as a limited member, never the owner.
  const tunnelGuest=options.tunnelPrototype?(store.users().find(u=>u.name==='Tunnel guest')||store.createUser('Tunnel guest','member')):undefined;
  if(options.ownerToken){if(!store.auth(options.ownerToken))store.token(owner.id,'Local owner',['read','submit','manage'],options.ownerToken);}
@@ -47,7 +56,7 @@ export async function createServer(options:ServerOptions){
  const startupCtx=worker?await worker.context({signal:new AbortController().signal,workDir:path.join(store.dataDir,'cache'),maxRuntimeSeconds:120,maxBytes:200000000}):undefined;
  const versions=await toolVersions(tools,startupCtx);const encoders=options.encoders??await testEncoders(tools,path.join(store.dataDir,'cache'),startupCtx);
  const queue=new Queue(store,tools,encoders,options.testOrigin,worker,versions);if(options.startQueue===false)await queue.stop();
- const app=Fastify({logger:false,bodyLimit:3*1024*1024,requestTimeout:120000,connectionTimeout:30000,forceCloseConnections:true});
+ const app=Fastify({logger:false,bodyLimit:3*1024*1024,requestTimeout:desktopLocal?0:120000,connectionTimeout:30000,forceCloseConnections:true});
  const routes:{method:string;url:string}[]=[];app.addHook('onRoute',route=>{for(const method of Array.isArray(route.method)?route.method:[route.method])if(route.url.startsWith('/api/v1/'))routes.push({method,url:route.url});});
  const bandwidth=new BandwidthLimiter();
  const sessions=new Map<string,{count:number;until:number}>();const activeTransfers=new Map<string,number>();const auxiliary=new Map<string,number>();const responses=new WeakMap<FastifyRequest,FastifyReply>();
@@ -73,6 +82,7 @@ export async function createServer(options:ServerOptions){
  const assertSource=(id:string,user:User)=>{const s=store.get<Source>('source',id,user.id);if(!s)throw bad('Source not found',404);const a=store.get<Artifact>('artifact',s.artifactId,user.id);if(!a)throw bad('Original media no longer available',404);if(store.deletingArtifact(a.id))throw bad('Artifact deletion is in progress',409);enforceMedia(a.media,user.policy);return a;};
  const assertOverlays=(recipe:Recipe,user:User)=>{for(const o of recipe.overlays)if(!store.get<OverlayImage>('overlay',o.imageId,user.id))throw bad('Overlay image not found; add the image again',404);};
  function validateRequest(input:unknown,user:User):JobRequest {const request=JobRequestSchema.parse(input);enforceJob(request,user.policy);
+  if(request.type==='download'&&request.download.destinationId&&(options.shared||options.tunnelPrototype||user.role!=='owner'||!store.get('download-destination',request.download.destinationId,user.id)))throw bad('Download folder is not authorized; choose it in the desktop app',403);
   if(request.type==='download'&&request.download.cookieId&&(options.shared||user.role!=='owner'))throw bad('Credentials are local-owner only',403);
   if(request.type==='proxy')assertSource(request.sourceId,user);
   if(request.type==='export'){
@@ -91,7 +101,7 @@ export async function createServer(options:ServerOptions){
  async function auxiliaryWork<T>(req:FastifyRequest,fn:(ctx:ExecutionContext & {storageReservation?:ReturnType<Store['reserve']>})=>Promise<T>){
   const u=auth(req).user;const n=auxiliary.get(u.id)||0;if(n>=2)throw bad('Two preview/inspection operations already active',429);if([...auxiliary.values()].reduce((sum,count)=>sum+count,0)>=4)throw bad('Host preview/upload capacity reached',429);auxiliary.set(u.id,n+1);
   let workDir='';const c=new AbortController();const abort=()=>c.abort();req.raw.on('aborted',abort);const response=responses.get(req)?.raw;response?.on('close',abort);
-  const maxRuntimeSeconds=Math.min(120,u.policy.maxRuntimeSeconds);let timedOut=false;const deadline=setTimeout(()=>{timedOut=true;c.abort();},maxRuntimeSeconds*1000);deadline.unref();
+  const maxRuntimeSeconds=req.url==='/api/v1/uploads'&&desktopLocal&&u.role==='owner'?u.policy.maxRuntimeSeconds:Math.min(120,u.policy.maxRuntimeSeconds);let timedOut=false;const deadline=setTimeout(()=>{timedOut=true;c.abort();},maxRuntimeSeconds*1000);deadline.unref();
   const reservation=worker?store.reserve(u.id):undefined;let releaseSource:(()=>void)|undefined;
   try{const sourceId=/^\/api\/v1\/sources\/([0-9a-f-]{36})\//.exec(req.url)?.[1];if(sourceId){const source=owned<Source>('source',sourceId,req);owned<Artifact>('artifact',source.artifactId,req);releaseSource=store.holdArtifact(source.artifactId);}
    workDir=await mkdtemp(path.join(store.dataDir,'work','inspect-'));const maxBytes=worker?Math.min(u.policy.maxInputBytes,Math.floor(store.availableBytes(u.id)/3)-WORKER_SCRATCH_OVERHEAD_BYTES):u.policy.maxInputBytes;if(maxBytes<=0)throw bad('Insufficient storage for bounded worker scratch',413);reservation?.add(3*(maxBytes+WORKER_SCRATCH_OVERHEAD_BYTES));
@@ -118,8 +128,8 @@ export async function createServer(options:ServerOptions){
   const user=auth(req).user;if(!user.policy.upload)throw bad('Upload permission required',403);const name=z.string().min(1).max(200).parse(req.headers['x-filename']?decodeURIComponent(String(req.headers['x-filename'])):'imported-media');
   return auxiliaryWork(req,async(ctx)=>{const file=path.join(ctx.workDir,'upload');const limit=Math.min(ctx.maxBytes||user.policy.maxInputBytes,ctx.storageReservation?Number.MAX_SAFE_INTEGER:store.availableBytes(user.id));let bytes=0;const reservation=ctx.storageReservation||store.reserve(user.id);
    const limiter=new Transform({transform(chunk,encoding,cb){try{bytes+=chunk.length;if(bytes>limit)throw bad('Upload/storage byte limit exceeded',413);if(!ctx.storageReservation)reservation.add(chunk.length);cb(null,chunk);}catch(error){cb(error as Error);}}});
-   const input=req.body as import('node:stream').Readable;input.pipe(limiter);
-   try{await pipeline(limiter,bandwidth.stream(user.id,user.policy.bandwidthBytesPerSecond,user.policy.maxTransferBytes),createWriteStream(file,{flags:'wx',mode:0o600}),{signal:ctx.signal});const media=await validateMedia(file,tools,ctx);enforceMedia(media,user.policy);const artifact=await publish(store,file,user.id,name,media,'original',undefined,undefined,reservation);return registerSource(store,artifact);}catch(error){input.unpipe(limiter);input.resume();throw error;}finally{if(!ctx.storageReservation)reservation.release();}});
+   const input=req.body as import('node:stream').Readable;input.once('error',error=>limiter.destroy(error));input.once('aborted',()=>limiter.destroy(Error('Upload connection interrupted')));input.pipe(limiter);
+   try{await pipeline([limiter,...(desktopLocal&&user.role==='owner'?[]:[bandwidth.stream(user.id,user.policy.bandwidthBytesPerSecond,user.policy.maxTransferBytes)]),createWriteStream(file,{flags:'wx',mode:0o600})],{signal:ctx.signal});const media=desktopLocal&&user.role==='owner'?await inspectLocalImport(file,tools,ctx):await validateMedia(file,tools,ctx);enforceMedia(media,user.policy);const artifact=await publish(store,file,user.id,name,media,'original',undefined,undefined,reservation);return registerSource(store,artifact);}catch(error){input.unpipe(limiter);input.resume();throw error;}finally{if(!ctx.storageReservation)reservation.release();}});
  });
  // Overlay images are PNG only: the browser normalises pasted or chosen images before upload.
  app.addContentTypeParser('image/png',(req,payload,done)=>done(null,payload));
@@ -128,8 +138,8 @@ export async function createServer(options:ServerOptions){
   if(store.all<OverlayImage>('overlay',user.id).length>=200)throw bad('Overlay image limit reached',429);
   return auxiliaryWork(req,async ctx=>{const file=path.join(ctx.workDir,'overlay.png');const limit=Math.min(OVERLAY_BYTES,store.availableBytes(user.id));let bytes=0;
    const limiter=new Transform({transform(chunk,encoding,cb){bytes+=chunk.length;cb(bytes>limit?bad('Overlay image is too large (20 MB maximum)',413):null,chunk);}});
-   const input=req.body as import('node:stream').Readable;input.pipe(limiter);
-   try{await pipeline(limiter,bandwidth.stream(user.id,user.policy.bandwidthBytesPerSecond,user.policy.maxTransferBytes),createWriteStream(file,{flags:'wx',mode:0o600}),{signal:ctx.signal});}catch(error){input.unpipe(limiter);input.resume();throw error;}
+   const input=req.body as import('node:stream').Readable;input.once('error',error=>limiter.destroy(error));input.once('aborted',()=>limiter.destroy(Error('Upload connection interrupted')));input.pipe(limiter);
+   try{await pipeline([limiter,...(desktopLocal&&user.role==='owner'?[]:[bandwidth.stream(user.id,user.policy.bandwidthBytesPerSecond,user.policy.maxTransferBytes)]),createWriteStream(file,{flags:'wx',mode:0o600})],{signal:ctx.signal});}catch(error){input.unpipe(limiter);input.resume();throw error;}
    const head=await readFile(file);if(!head.subarray(0,8).equals(Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a])))throw bad('Overlay must be a PNG image',415);
    const {width,height}=await probeImage(file,tools,ctx);if(width>8192||height>8192||width*height>user.policy.maxPixels)throw bad('Overlay image resolution exceeds policy',413);
    const id=randomUUID();await writeFile(await overlayPath(store,id),head,{flag:'wx',mode:0o600});
@@ -151,7 +161,7 @@ export async function createServer(options:ServerOptions){
  app.get('/api/v1/history/export',async(req,reply)=>{const rows=store.jobs(auth(req).user.id);if((req.query as any).format==='csv'){const quote=(x:unknown)=>'"'+String(x??'').replace(/"/g,'""').replace(/^[=+@-]/,"'")+'"';reply.type('text/csv').header('Content-Disposition','attachment; filename="history.csv"');return ['id,state,type,createdAt,artifactId,error',...rows.map(j=>[j.id,j.state,j.request.type,j.createdAt,j.artifactId,j.error].map(quote).join(','))].join('\r\n');}return rows;});
  app.get('/api/v1/artifacts/:id/content',async(req,reply)=>{
   const a=owned<Artifact>('artifact',params(req).id,req);const file=await managedPath(store,a.id);const size=(await stat(file)).size;
-  let start=0,end=size-1;const range=req.headers.range;if(range){const m=/^bytes=(\d*)-(\d*)$/.exec(range);if(!m||!m[1]&&!m[2]){reply.header('Content-Range',`bytes */${size}`);throw bad('Invalid range',416);}if(!m[1])start=Math.max(0,size-Number(m[2]));else{start=Number(m[1]);if(m[2])end=Math.min(end,Number(m[2]));}if(start>end||start>=size){reply.header('Content-Range',`bytes */${size}`);throw bad('Range outside artifact',416);}reply.code(206).header('Content-Range',`bytes ${start}-${end}/${size}`);}
+  let start=0,end=size-1;const range=req.headers.range;if(range){const m=/^bytes=(\d*)-(\d*)$/.exec(range);if(!m||!m[1]&&!m[2]){reply.header('Content-Range',`bytes */${size}`);throw bad('Invalid range',416);}if(!m[1])start=Math.max(0,size-Number(m[2]));else{start=Number(m[1]);if(m[2])end=Math.min(end,Number(m[2]));else end=Math.min(end,start+8*1024*1024-1);}if(start>end||start>=size){reply.header('Content-Range',`bytes */${size}`);throw bad('Range outside artifact',416);}reply.code(206).header('Content-Range',`bytes ${start}-${end}/${size}`);}
   const policy=auth(req).user.policy;if(end-start+1>policy.maxTransferBytes)throw bad('Transfer exceeds byte policy',413);
   const release=store.holdArtifact(a.id);activeTransfers.set(a.id,(activeTransfers.get(a.id)||0)+1);
   const stream=createReadStream(file,{start,end});let released=false;
@@ -199,6 +209,13 @@ export async function createServer(options:ServerOptions){
  app.patch('/api/v1/admin/users/:id',async(req)=>{ownerOnly(req);const schema=PolicySchema;const {policy}=z.object({policy:schema}).strict().parse(req.body);const user=store.user(Id.parse(params(req).id));if(!user)throw bad('User not found',404);return store.updateUser(user.id,policy);});
  app.post('/api/v1/retention',async(req)=>({removed:await retention(store,auth(req).user.id)}));
  app.get('/api/v1/diagnostics',async(req)=>({tools:versions,encoders,mode:options.shared?'shared':'local',isolatedWorkers:!!worker,sharedHosting:!!options.shared,failures:store.jobs(auth(req).user.id).filter(j=>j.state==='failed').map(j=>({id:j.id,type:j.request.type,error:j.error,updatedAt:j.updatedAt})).slice(-30),telemetry:false}));
+ app.post('/api/v1/desktop/download-folder',async req=>{
+  localOwner(req);const secret=String(req.headers['x-desktop-secret']||'');if(!options.desktopSecret||!safeEqual(secret,options.desktopSecret))throw bad('Desktop companion pairing required',403);
+  const input=z.object({path:z.string().min(1).max(32768)}).strict().parse(req.body),folder=await realpath(input.path);
+  if(!(await stat(folder)).isDirectory())throw bad('Choose a folder');
+  const relative=path.relative(store.dataDir,folder);if(!relative||!relative.startsWith('..')&&!path.isAbsolute(relative))throw bad('Choose a folder outside application storage');
+  const id=randomUUID();store.put('download-destination',id,auth(req).user.id,{id,path:folder,label:folder});return {id,label:folder};
+ });
  app.get('/api/v1/events',async(req,reply)=>{reply.type('text/event-stream');const jobs=store.jobs(auth(req).user.id);return `event: jobs\ndata: ${JSON.stringify(jobs)}\n\n`;});
  app.get('/api/v1/desktop/artifacts/:id',async(req)=>{localOwner(req);const secret=String(req.headers['x-desktop-secret']||'');if(!options.desktopSecret||!safeEqual(secret,options.desktopSecret))throw bad('Desktop companion pairing required',403);const a=owned<Artifact>('artifact',params(req).id,req);return {path:await nativeCopy(store,a),name:a.name,mediaTypes:a.media.streams.map(s=>s.type).filter(s=>['video','audio'].includes(s))};});
  app.get('/api/v1/openapi.json',async()=>buildOpenAPI(routes));

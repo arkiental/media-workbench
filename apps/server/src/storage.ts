@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { lstat, realpath, rename, unlink, mkdir, copyFile, stat, rm } from 'node:fs/promises';
-import { createReadStream } from 'node:fs';
+import { lstat, realpath, rename, unlink, mkdir, copyFile, stat, rm, link } from 'node:fs/promises';
+import { createReadStream, constants } from 'node:fs';
 import { createHash } from 'node:crypto';
 import type { Artifact, MediaInfo, Source } from '../../../packages/contracts/src/index.ts';
 import { Store } from '../../../packages/jobs/src/store.ts';
@@ -29,6 +29,20 @@ export async function overlayPath(store:Store,id:string){
 export const safeName=(name:string)=>{let value=name.replace(/[\x00-\x1f<>:"/\\|?*]/g,'_').replace(/^\.+/,'').slice(0,180).replace(/[. ]+$/,'')||'media';if(/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(value))value='_'+value;return value;};
 /** A separate verified copy preserves the original when an external editor changes the handoff. */
 const handoffs=new WeakMap<Store,Map<string,Promise<string>>>();
+export type DownloadDestination={id:string;path:string;label:string};
+export async function saveDownloadCopy(store:Store,artifact:Artifact,destinationId:string):Promise<string>{
+ const destination=store.get<DownloadDestination>('download-destination',destinationId,artifact.ownerId);
+ if(!destination)throw Error('Choose the download folder again');
+ if(await realpath(destination.path)!==destination.path)throw Error('Download folder changed; choose it again');
+ const temporary=path.join(destination.path,`.media-workbench-${randomUUID()}.partial`),parsed=path.parse(safeName(artifact.name));
+ try{await copyFile(await managedPath(store,artifact.id),temporary);
+  for(let n=0;n<1000;n++){const target=path.join(destination.path,`${parsed.name}${n?` (${n})`:''}${parsed.ext}`);try{
+   try{await link(temporary,target);}catch(error){if(!['ENOSYS','ENOTSUP','EOPNOTSUPP','EPERM'].includes((error as NodeJS.ErrnoException).code||''))throw error;await copyFile(temporary,target,constants.COPYFILE_EXCL);}
+   return target;
+  }catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;}}
+  throw Error('Too many files with this name in the download folder');
+ }finally{await unlink(temporary).catch(()=>{});}
+}
 export function nativeCopy(store:Store,artifact:Artifact){
  const release=store.holdArtifact(artifact.id);
  let active=handoffs.get(store);if(!active){active=new Map();handoffs.set(store,active);}const previous=active.get(artifact.id)||Promise.resolve('');

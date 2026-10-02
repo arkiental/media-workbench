@@ -13,4 +13,4 @@ export function NumberField({ label,value,onChange,min,max,step = 'any',disabled
 export function Checkbox({ label,value,onChange }: { label:string; value:boolean; onChange:(v:boolean)=>void }) {
   return <label className="check"><input type="checkbox" checked={value} onChange={e=>onChange(e.target.checked)}/>{label}</label>;
 }
-export function bytes(n:number): string { return n < 1_000_000 ? `${(n/1000).toFixed(1)} kB` : `${(n/1_000_000).toFixed(2)} MB`; }
+export function bytes(n:number): string { return n>=1_000_000_000?`${(n/1_000_000_000).toFixed(2)} GB`:n < 1_000_000 ? `${(n/1000).toFixed(1)} kB` : `${(n/1_000_000).toFixed(2)} MB`; }
