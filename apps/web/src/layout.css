@@ -1,0 +1,372 @@
+.page-content:not(.editor-main) {
+  padding-block: 24px 28px;
+}
+
+.page-content .panel > h2 {
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+}
+
+.page-empty {
+  padding-block: 20px 12px;
+}
+
+.general-settings-layout {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+  align-items: start;
+}
+
+.general-settings-layout > .general-settings {
+  display: contents;
+}
+
+.general-settings-layout .panel {
+  margin: 0;
+}
+
+.general-settings-layout > .panel,
+.general-settings-layout .general-settings > .panel:first-child {
+  grid-column: 1;
+}
+
+.general-settings-layout .general-settings > .panel:last-child {
+  grid-column: 2;
+  grid-row: 1 / 3;
+}
+
+.general-settings-layout > .panel .field {
+  max-width: 340px;
+}
+
+.library-page .media-list .media-card {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr) auto;
+  gap: 12px 20px;
+  align-items: center;
+}
+
+.library-page .media-card-heading {
+  display: contents;
+}
+
+.library-page .media-card-heading > :first-child {
+  grid-column: 1;
+  grid-row: 1 / 3;
+  align-self: start;
+}
+
+.library-page .media-name {
+  grid-column: 2;
+}
+
+.library-page .media-primary-actions {
+  grid-column: 3;
+  grid-row: 1;
+}
+
+.library-page .media-card-actions {
+  grid-column: 2 / -1;
+  grid-row: 2;
+  margin: 0;
+  align-items: center;
+}
+
+.library-page .media-card-actions > .actions {
+  display: contents;
+}
+
+.library-page .library-preview {
+  grid-column: 2 / -1;
+  grid-row: 3;
+  margin: 4px 0 0;
+  width: 100%;
+}
+
+.history-download {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.export-dialog .dialog-heading {
+  position: sticky;
+  top: -24px;
+  z-index: 2;
+  background: var(--surface);
+  padding-block: 12px;
+  margin-bottom: 12px;
+}
+
+.page-content .export-dialog > .panel {
+  padding: 0;
+  margin: 0;
+}
+
+.timeline-section-number {
+  position: absolute;
+  top: 5px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 2px 5px;
+  background: #000;
+  color: #fff;
+}
+
+.export-dialog > .panel > .actions {
+  position: sticky;
+  bottom: -24px;
+  padding-block: 12px;
+  background: var(--surface);
+  z-index: 1;
+}
+
+@media (min-width: 851px) {
+  .editing-shell .cut-layout,
+  .editing-shell:has(.tool-cut) .cut-layout {
+    height: calc(100dvh - 352px);
+    min-height: 300px;
+  }
+
+  .editing-shell .editor-tool-rail {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-block: 10px;
+  }
+
+  .editing-shell .editor-tool-rail > button,
+  .editing-shell .more-editor-tools {
+    flex: 1 1 0;
+    height: auto;
+    min-height: 44px;
+    max-height: 72px;
+  }
+
+  .editing-shell .more-editor-tools > summary {
+    height: 100%;
+    min-height: 44px;
+  }
+
+  .editing-shell .region-sidebar,
+  .editing-shell .editor-inspector {
+    height: auto;
+    min-height: 0;
+  }
+
+  .editing-shell .region-sidebar {
+    padding: 16px;
+  }
+
+  .editing-shell .region-sidebar .actions {
+    margin-block: 10px;
+  }
+
+  .section-trim-range {
+    margin-block: 0;
+  }
+
+  .editing-shell .region-sidebar .region-list {
+    flex-shrink: 0;
+  }
+
+  .section-boundary input {
+    font-size: 12px;
+  }
+
+  .transport-time {
+    white-space: nowrap;
+  }
+
+  .editing-shell .cut-transport output {
+    width: auto;
+    flex: none;
+  }
+}
+
+@media (min-width: 851px) and (max-width: 1100px) {
+  .editing-shell .app-header {
+    gap: 12px;
+  }
+
+  .editing-shell #editor-header-actions {
+    gap: 8px;
+  }
+
+  .editing-shell .editor-save-state {
+    max-width: 70px;
+  }
+
+  .job-media {
+    grid-template-columns: 96px minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .job-media .library-thumbnail {
+    width: 96px;
+  }
+}
+
+@media (max-width: 1050px) and (min-width: 601px) {
+  .library-page .media-list .media-card {
+    grid-template-columns: 140px minmax(0, 1fr) auto;
+    gap: 12px 16px;
+  }
+}
+
+@media (max-width: 850px) {
+  .page-content:not(.editor-main) {
+    padding: 16px 12px 24px;
+  }
+
+  .general-settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+
+  .general-settings-layout .general-settings > .panel:last-child {
+    grid-column: 1;
+    grid-row: auto;
+  }
+
+  .editing-shell .editor-context-panel {
+    order: 2;
+  }
+
+  .editing-shell .compact-timeline-toolbar {
+    order: 3;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 8px;
+  }
+
+  .compact-timeline-toolbar .timeline-tool-group {
+    gap: 4px;
+    flex-wrap: nowrap;
+  }
+
+  .compact-timeline-toolbar .timeline-zoom {
+    grid-column: 1 / -1;
+    order: 0;
+    margin: 0;
+    justify-content: flex-end;
+  }
+
+  .compact-timeline-toolbar .timeline-zoom > span {
+    display: inline;
+    margin-right: auto;
+  }
+
+  .compact-timeline-toolbar .timeline-zoom input {
+    display: block;
+    flex: 1;
+    max-width: 180px;
+    min-width: 44px;
+  }
+
+  .editing-shell .context-timeline {
+    order: 4;
+  }
+
+  .editing-shell .trim-handle {
+    width: 44px;
+  }
+
+  .jobs-toolbar .filter-buttons {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    width: 100%;
+  }
+
+  .jobs-toolbar .filter-buttons button {
+    display: flex;
+    justify-content: space-between;
+    margin: 0;
+  }
+
+  .jobs-table tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 12px;
+  }
+
+  .jobs-table .job-request,
+  .jobs-table td:last-child,
+  .jobs-table tr:has(.job-error, .job-plan) td:nth-child(2) {
+    grid-column: 1 / -1;
+  }
+
+  .jobs-table td.job-request::before,
+  .jobs-table td:last-child[data-label]::before,
+  .jobs-table .job-progress:empty {
+    display: none;
+  }
+
+  .export-dialog .dialog-heading {
+    top: -16px;
+  }
+
+  .export-dialog > .panel > .actions {
+    bottom: -16px;
+  }
+}
+
+@media (max-width: 600px) {
+  .library-page .media-list .media-card {
+    grid-template-columns: 112px minmax(0, 1fr);
+    gap: 12px;
+  }
+
+  .library-page .media-card-heading > :first-child {
+    grid-row: 1;
+  }
+
+  .library-page .media-primary-actions,
+  .library-page .media-card-actions,
+  .library-page .library-preview {
+    grid-column: 1 / -1;
+  }
+
+  .library-page .media-primary-actions {
+    grid-row: 2;
+  }
+
+  .library-page .media-card-actions {
+    grid-row: 3;
+  }
+
+  .library-page .library-preview {
+    grid-row: 4;
+  }
+
+  .library-page .library-tools {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+  }
+
+  .library-page .library-tools .field:first-child {
+    grid-column: 1 / -1;
+    min-width: 0;
+  }
+
+  .library-page .library-tools .field:nth-child(2) {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .library-page .library-tools > button {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 360px) {
+  .editing-shell .compact-timeline-toolbar {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .compact-timeline-toolbar .region-play-tools {
+    grid-column: 1 / -1;
+  }
+}

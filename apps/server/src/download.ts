@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { readdir, stat } from 'node:fs/promises';
+import { readdir, readFile, stat } from 'node:fs/promises';
 import type { DownloadRequest, ExecutionContext, Policy, ToolPaths } from '../../../packages/contracts/src/index.ts';
 import { runProcess } from '../../../packages/media/src/process.ts';
 import { createEgressProxy, validateDestination } from './network.ts';
@@ -10,14 +10,26 @@ async function metadata(request:DownloadRequest,tools:ToolPaths,ctx:DownloadCont
  const result=await runProcess(tools.ytdlp,[...args(tools,proxy,ctx,selection),'--dump-single-json','--skip-download','--',request.url],ctx,{maxStdoutBytes:8*1024*1024});
  return JSON.parse(result.stdout.toString());
 }
+const THUMBNAIL_LIMIT=1500000,thumbnailTypes:Record<string,string>={'.jpg':'image/jpeg','.jpeg':'image/jpeg','.png':'image/png','.webp':'image/webp'};
+// Best effort: fetched by yt-dlp through the same egress proxy, then inlined so the page's img-src policy stays local-only.
+async function fetchThumbnail(request:DownloadRequest,tools:ToolPaths,ctx:DownloadContext,proxy:string){
+ try{
+  await runProcess(tools.ytdlp,[...args(tools,proxy,ctx),'--skip-download','--write-thumbnail','-o',path.join(ctx.workDir,'thumb.%(ext)s'),'--',request.url],ctx,{maxStdoutBytes:1024*1024});
+  const file=(await readdir(ctx.workDir)).find(name=>name.startsWith('thumb.')&&thumbnailTypes[path.extname(name).toLowerCase()]);
+  if(!file)return undefined;const full=path.join(ctx.workDir,file);if((await stat(full)).size>THUMBNAIL_LIMIT)return undefined;
+  return `data:${thumbnailTypes[path.extname(file).toLowerCase()]};base64,${(await readFile(full)).toString('base64')}`;
+ }catch{return undefined;}
+}
 export async function inspectDownload(request:DownloadRequest,tools:ToolPaths,ctx:DownloadContext){
  await validateDestination(request.url,ctx.policy.allowedSites,ctx.testOrigin);
  const proxy=await createEgressProxy(Math.min(ctx.policy.maxInputBytes,ctx.policy.maxTransferBytes,10000000),ctx.signal,ctx.testOrigin,ctx.policy.bandwidthBytesPerSecond);
  try{
   const data=await metadata(request,tools,ctx,proxy.url,`1:${INSPECTION_LIMIT}`);const entries=(Array.isArray(data.entries)?data.entries:[data]).filter(Boolean);
-  return {title:String(data.title||'Media').slice(0,300),duration:data.duration??null,authentication:'unknown',playlistLimited:true,collection:Array.isArray(data.entries),inspectionLimit:INSPECTION_LIMIT,limitReached:entries.length>=INSPECTION_LIMIT,entries:entries.slice(0,INSPECTION_LIMIT).map((e:any,i:number)=>({
+  const thumbnail=await fetchThumbnail(request,tools,ctx,proxy.url);
+  const text=(value:unknown,max:number)=>typeof value==='string'&&value?value.slice(0,max):undefined;
+  return {title:String(data.title||'Media').slice(0,300),duration:data.duration??null,uploader:text(data.uploader||data.channel,200),viewCount:Number.isFinite(data.view_count)?data.view_count:undefined,uploadDate:/^\d{8}$/.test(String(data.upload_date))?String(data.upload_date):undefined,description:text(data.description,400),site:text(data.extractor_key||data.extractor,60),thumbnail,authentication:'unknown',playlistLimited:true,collection:Array.isArray(data.entries),inspectionLimit:INSPECTION_LIMIT,limitReached:entries.length>=INSPECTION_LIMIT,entries:entries.slice(0,INSPECTION_LIMIT).map((e:any,i:number)=>({
    itemIndex:Number.isInteger(e.playlist_index)&&e.playlist_index>=1&&e.playlist_index<=INSPECTION_LIMIT?e.playlist_index:i+1,id:String(e.id||''),title:String(e.title||'').slice(0,300),duration:e.duration??null,
-   formats:(e.formats||[]).slice(0,300).map((f:any)=>({id:String(f.format_id),ext:f.ext,width:f.width,height:f.height,vcodec:f.vcodec,acodec:f.acodec,bytes:f.filesize||f.filesize_approx||null}))
+   formats:(e.formats||[]).slice(0,300).map((f:any)=>({id:String(f.format_id),ext:f.ext,width:f.width,height:f.height,vcodec:f.vcodec,acodec:f.acodec,tbr:f.tbr,fps:f.fps,bytes:f.filesize||f.filesize_approx||null}))
   }))};
  }catch(e){throw Error(redactError(e));}finally{proxy.close();}
 }
@@ -42,7 +54,7 @@ export async function downloadMedia(request:DownloadRequest,tools:ToolPaths,ctx:
     ctx.onProgress?.(lastProgress,status==='finished'?'Download stream received; preparing the file':`Downloading: ${(received/1024**2).toFixed(1)} MB received${total?totalText==='NA'?' (estimated size)':'':''}`);
    }else if(line.startsWith('MW_POSTPROCESS:')){ctx.onStage?.('processing');ctx.onProgress?.(lastProgress,'Preparing the downloaded file');}
   };
-  const toolResult=await runProcess(tools.ytdlp,[...args(tools,proxy.url,ctx,String(itemIndex)),'--progress','--newline','--progress-delta','0.25','--progress-template','download:MW_DOWNLOAD:%(info.format_id)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.status)s','--progress-template','postprocess:MW_POSTPROCESS:%(progress.status)s','--max-filesize',String(ctx.policy.maxInputBytes),'--downloader','native','--hls-prefer-native','--merge-output-format','mkv','-f',format,'-o',path.join(ctx.workDir,'download.%(ext)s'),'--',request.url],ctx,{onOutputLine});
+  const toolResult=await runProcess(tools.ytdlp,[...args(tools,proxy.url,ctx,String(itemIndex)),'--progress','--newline','--progress-delta','0.25','--progress-template','download:MW_DOWNLOAD:%(info.format_id)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.status)s','--progress-template','postprocess:MW_POSTPROCESS:%(progress.status)s','--max-filesize',String(ctx.policy.maxInputBytes),'--concurrent-fragments','8','--downloader','native','--hls-prefer-native','--merge-output-format','mkv','-f',format,'-o',path.join(ctx.workDir,'download.%(ext)s'),'--',request.url],ctx,{onOutputLine});
   if(proxy.violation)throw Error(proxy.violation);
   const files=(await readdir(ctx.workDir)).filter(f=>/^download\.[a-zA-Z0-9]{1,8}$/.test(f));if(files.length!==1){
    const diagnostics=(toolResult.stderr+'\n'+toolResult.stdout.toString()).split(/\r?\n/).filter(line=>line.trim()&&!line.startsWith('MW_')).slice(-8).join('\n');

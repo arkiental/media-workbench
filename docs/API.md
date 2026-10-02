@@ -9,7 +9,10 @@ Authenticate requests with `Authorization: Bearer <scoped token>` or exchange a 
 | POST /session; DELETE /session | Pair with `{token}`; log out |
 | GET /capabilities | Effective user policy, actually smoke-tested encoders, tool versions and native availability |
 | GET /sources; GET /artifacts | Current user's source/artifact metadata |
+| POST /sources/from-artifact | `{artifactId}`; reuse or register an owned, validated clip as an editable Source; requires submit scope and processing permission; retains media bytes |
 | POST /uploads | Raw `application/octet-stream`; URI-encoded `x-filename`; returns managed Source after validation |
+| POST /overlays | Raw `image/png` (20 MB max, 8192 px per side); URI-encoded `x-filename`; returns `{id,name,width,height,bytes}` for use as `recipe.overlays[].imageId`. The browser re-encodes other image formats to PNG first |
+| GET /overlays/:id/content | Owned overlay PNG |
 | POST /sources/inspect | DownloadRequest: `{url,preference?,format?,cookieId?,itemIndex?}`; bounded metadata/formats for up to100 entries; exactly one selected item (default1) |
 | POST /jobs | JobRequest plus required `Idempotency-Key`; returns durable job at202 |
 | GET /jobs; GET /jobs/:id | Per-user durable state and measured output artifact |
@@ -22,6 +25,7 @@ Authenticate requests with `Authorization: Bearer <scoped token>` or exchange a 
 | PATCH /artifacts/:id | `{pinned?,expiresAt?}` |
 | GET /sources/:id/frames?around=seconds | Bounded actual presentation timestamp and keyframe index |
 | GET /sources/:id/frame?pts=seconds | Source-decoded PNG; processing permission required |
+| GET /sources/:id/thumb?pts=seconds | Small JPEG timeline thumbnail; processing permission required |
 | GET /sources/:id/waveform | Progressive peak envelope; optional start/duration (max60s)/points (max2000)/track; returns total duration, start/end, complete and sampling rate |
 | POST /export/plan | `{recipe,options,presetId?}`; stream decisions, actual encoder, reasons and correction budget |
 | GET /projects; POST /projects; DELETE /projects/:id | Save/load non-destructive source-time recipes; POST includes `{id?,name,recipe,options}` |
@@ -40,6 +44,14 @@ Authenticate requests with `Authorization: Bearer <scoped token>` or exchange a 
 
 Submission forms: `{type:"download",download:{url}}`; `{type:"proxy",sourceId}`; `{type:"export",recipe:{schemaVersion:1,sourceId,segments:[{in:0.5,out:2}]},options:{cut:"exact",mode:"size",maxBytes:200000}}`. Runtime schemas fill defaults. Reusing a key with a different request fails; retrying an accepted identical key returns the same job even at queue capacity.
 
+Fast lossless trimming: use `options:{cut:"auto",mode:"auto"}`. Eligible trims and multiple kept sections use stream copy; edits/compression or incompatible MP4 codecs select encoding. `cut:"copy"` explicitly requires stream copy. `copyValidation:"fast"` (also the behavior when omitted) probes the output and decodes short cut-edge samples; it does not certify every interior frame. `copyValidation:"full"` compares decoded source/section hashes and fully decodes the final output. Completed job plans include `requestedSegments`, actual keyframe `segments`, warnings, and `validation`. Saved presets and the API's existing default compression mode remain authoritative.
+
+`recipe.caption` optionally accepts `{text,size,padding}`. White centered text is wrapped into a black band above the transformed picture; output height increases by the even-numbered band height. Size and padding use output pixels. Empty text adds no band. The editor uses this instead of movable text overlays; legacy recipe `text` and subtitle cues remain supported by the API. Caption pixels count toward the output resolution policy.
+
+Link inspection exposes available video resolutions for per-item quality shortcuts. Video-only selections include an audio stream when available. Native DASH/HLS downloads use eight concurrent fragments, with aggregate transfer limits and destination filtering unchanged. Local transfer scheduling permits at most a 20ms bandwidth burst rather than sleeping for every small chunk.
+
 Future extension: keep credentials in the trusted background/service worker, restrict host permissions, pair with scoped and revocable tokens, and use HTTPS for any future remote service. Content scripts must never receive native authority or automatically relay site cookies. The full extension and companion registration are not implemented. Local post-actions belong to desktop IPC, not ordinary API submissions.
 
 `DELETE /jobs/:id` removes only terminal job history; completed media remains. `DELETE /artifacts/:id` explicitly removes an owned managed file and its source registration while retaining history. Imported originals require `{confirmOriginal:true}`. Pinned, project-referenced, queued/active or leased artifacts cannot be deleted. No external source path is ever removed. New reads and leases are denied while explicit deletion runs. Policy errors are returned as structured `{error}` responses; the UI displays them. Auxiliary upload/preview/inspection is limited to two active operations per user and four across the host, with a whole-operation deadline.
+
+`GET /artifacts` returns newest-added files first. Playback/download transfers hold files only until the response closes; editor analysis holds them until its operation finishes. Completed reads no longer impose an extra deletion delay. Native handoff leases remain persistent across restart. The first startup after this upgrade removes old read leases without touching handoff leases or media files.

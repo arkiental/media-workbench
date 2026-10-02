@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { access, copyFile, mkdir, mkdtemp, readFile, readdir, stat, utimes, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { RecipeSchema, ExportSchema, type ExecutionContext, type NativeRunOptions, type ToolPaths } from '../packages/contracts/src/index.ts';
-import { discoverTools, exportMedia, probe, runProcess, validateMedia } from '../packages/media/src/index.ts';
+import { discoverTools, exportMedia, planExport, probe, runProcess, validateMedia } from '../packages/media/src/index.ts';
 import { Store } from '../packages/jobs/src/store.ts';
 import { Queue } from '../packages/jobs/src/queue.ts';
 import { managedPath, publish, registerSource } from '../apps/server/src/storage.ts';
@@ -15,7 +15,7 @@ let root: string;
 let tools: ToolPaths;
 const fixtures: { name: string; file: string }[] = [];
 const evidence: { testedAt: string; checks: unknown[] } = { testedAt: new Date().toISOString(), checks: [] };
-const copyOptions = ExportSchema.parse({ cut: 'copy', mode: 'auto', container: 'mkv' });
+const copyOptions = ExportSchema.parse({ cut: 'copy', mode: 'auto', container: 'mkv', copyValidation: 'full' });
 const recipe = () => RecipeSchema.parse({ sourceId: randomUUID(), segments: [{ in: 7.2, out: 9.1 }], audio: { mode: 'mute' } });
 const isHash = (args: string[]) => args.includes('-hash') && args.includes('sha256');
 const inputOf = (args: string[]) => args[args.indexOf('-i') + 1];
@@ -71,6 +71,60 @@ before(async () => {
 
 after(async () => {
   await writeFile(path.resolve('test-output/copy-validation/evidence.json'), JSON.stringify({ ...evidence, root, fixtures }, null, 2));
+});
+
+test('fast automatic trims preserve decoded frame identities without encoder tests, full scans or full decodes', { timeout: 60000 }, async t => {
+  for(const fixture of fixtures)await t.test(fixture.name,async()=>{
+    const workDir=await workspace(),output=path.join(workDir,'fast.mkv'),ctx=context(workDir),underlying=ctx.runTool!;
+    const calls:string[][]=[];ctx.runTool=async(binary,args,options)=>{calls.push(args);return underlying(binary,args,options);};
+    const started=performance.now();
+    const result=await exportMedia(fixture.file,output,recipe(),ExportSchema.parse({cut:'auto',mode:'auto',container:'mkv'}),tools,ctx);
+    const elapsedMs=performance.now()-started;
+    assert.equal(result.plan.strategy,'copy');assert.match(String(result.plan.validation),/bounded cut-edge/);
+    assert(!calls.some(args=>args.includes('-encoders')||args.includes('-hash')||args.includes('-show_frames')));
+    assert(calls.filter(args=>args.includes('-show_packets')).every(args=>args.includes('-read_intervals')));
+    assert(calls.filter(args=>args.includes('-xerror')).every(args=>args.includes('-t')&&args[args.indexOf('-t')+1]==='0.5'));
+    const sourceMedia=await probe(fixture.file,tools),[n,d]=sourceMedia.streams.find(s=>s.type==='video')!.timeBase!.split('/').map(Number),tick=n/d;
+    const {in:start,out:end}=result.plan.segments[0];
+    assert(start>=6&&start<8.1);
+    assert.equal(await hash(output),await hash(fixture.file,`trim=start_pts=${Math.ceil(start/tick-1e-7)}:end_pts=${Math.ceil(end/tick-1e-7)}`));
+    await validateMedia(output,tools);
+    evidence.checks.push({name:`fast ${fixture.name}`,elapsedMs,start,end,toolCalls:calls.length});
+  });
+});
+
+test('lossless multi-cut preserves section order, avoids duplicate adjacent splits and retains audio', { timeout: 30000 }, async()=>{
+  const workDir=await workspace(),source=path.join(workDir,'with-audio.mp4');
+  await runProcess(tools.ffmpeg,['-v','error','-i',fixtures[1].file,'-f','lavfi','-i','sine=frequency=440:duration=12','-map','0:v:0','-map','1:a:0','-c:v','copy','-c:a','aac',source]);
+  for(const segments of [[{in:6,out:8},{in:2,out:4}],[{in:2,out:3},{in:3,out:4}]]){
+    const edit=RecipeSchema.parse({sourceId:randomUUID(),segments}),output=path.join(workDir,`${randomUUID()}.mp4`);
+    const result=await exportMedia(source,output,edit,ExportSchema.parse({mode:'auto'}),tools,context(workDir));
+    assert.equal(result.plan.strategy,'copy');assert(result.media.streams.some(s=>s.type==='audio'));
+    const sourceFrames=await frames(source),expected=result.plan.segments.flatMap(s=>sourceFrames.slice(Math.round(s.in*10),Math.round(s.out*10)));
+    assert.deepEqual(await frames(output),expected);
+    await validateMedia(output,tools);
+    assert(Math.abs(result.media.duration-result.plan.duration)<.15);
+    evidence.checks.push({name:'multi-cut with audio',requested:segments,resolved:result.plan.segments,duration:result.media.duration});
+  }
+});
+
+test('automatic fast mode still encodes filters and compression targets, and exact remains explicit',async()=>{
+  const source=await probe(fixtures[0].file,tools),edit=recipe(),encoders=[{name:'libx264',codec:'h264' as const,hardware:false,available:true,testedAt:new Date().toISOString()}];
+  assert.equal(planExport(edit,ExportSchema.parse({mode:'auto'}),source,[]).strategy,'copy');
+  for(const options of [{cut:'exact',mode:'auto'},{mode:'quality'},{mode:'bitrate'},{mode:'size',maxBytes:100000}])assert.equal(planExport(edit,ExportSchema.parse(options),source,encoders).strategy,'exact');
+  assert.equal(planExport({...edit,resize:{width:64,height:64}},ExportSchema.parse({mode:'auto'}),source,encoders).strategy,'exact');
+  assert.equal(planExport(edit,ExportSchema.parse({mode:'auto'}),await probe(fixtures[2].file,tools),encoders).strategy,'exact','FFV1 cannot silently select automatic MP4 stream copy');
+});
+
+test('fast cut cancellation and cumulative multi-cut byte limits prevent publication',async()=>{
+  const workDir=await workspace(),controller=new AbortController(),ctx=context(workDir),underlying=ctx.runTool!;
+  const output=path.join(workDir,'cancelled-fast.mkv');ctx.signal=controller.signal;
+  ctx.runTool=async(binary,args,options)=>{if(args.includes('-xerror'))controller.abort();return underlying(binary,args,options);};
+  await assert.rejects(exportMedia(fixtures[0].file,output,recipe(),ExportSchema.parse({mode:'auto',container:'mkv'}),tools,ctx),/cancelled/);
+  await assert.rejects(access(output));assert.deepEqual((await readdir(workDir)).filter(n=>n.startsWith('.partial-')),[]);
+  const limited=path.join(workDir,'limited.mkv');
+  await assert.rejects(exportMedia(fixtures[0].file,limited,{...recipe(),segments:[{in:2,out:4},{in:6,out:8}]},ExportSchema.parse({mode:'auto',container:'mkv'}),tools,{...context(workDir),maxBytes:1000}),/resource byte limit/);
+  await assert.rejects(access(limited));assert.deepEqual((await readdir(workDir)).filter(n=>n.startsWith('cut-')||n.startsWith('.partial-')),[]);
 });
 
 test('bounded late-copy verification equals the full-decode baseline across timestamps and codecs', { timeout: 120000 }, async t => {

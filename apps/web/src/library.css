@@ -1,0 +1,94 @@
+.job-media{display:grid;grid-template-columns:112px minmax(0,1fr);align-items:start;gap:12px}
+.job-media-details{min-width:0}
+.job-media .library-thumbnail{width:112px}
+.library-page .library-tools{gap:12px;padding-bottom:18px}
+.library-sort-note{color:var(--muted);font-size:12px;margin:0 0 4px}
+.library-delete-dialog{width:min(460px,calc(100vw - 32px));max-height:calc(100dvh - 32px);padding:24px;background:var(--surface);color:var(--ink);border:1px solid var(--line)}
+.library-delete-dialog::backdrop{background:rgba(0,0,0,.65)}
+.library-delete-dialog .library-delete-name{font-weight:600;overflow-wrap:anywhere}
+.library-delete-dialog .actions{justify-content:flex-end;margin:24px 0 0}
+.library-delete-dialog button{min-height:44px}
+.library-delete-confirm{background:#a72c30;color:#fff;border-color:#a72c30}
+.library-delete-confirm:hover:not(:disabled){background:#862025;color:#fff}
+.library-page .media-card-heading{display:grid;grid-template-columns:160px minmax(0,1fr) auto;gap:20px;align-items:center}
+.library-page .media-list .media-card{padding:20px 0}
+.library-page .media-card-actions{margin-left:180px;gap:8px}
+.library-page .library-preview{margin-left:180px}
+.library-page .media-name h3{font-size:16px;line-height:1.5;margin-bottom:8px}
+.library-page .media-facts{gap:6px 14px;line-height:1.5}
+.library-page .media-manage{padding:0;border-top:0}
+.library-thumbnail{position:relative;min-width:0;aspect-ratio:16/9;overflow:hidden;border-radius:6px;background:var(--bg)}
+.library-thumbnail-preview{position:relative;display:block;width:100%;height:100%;padding:0;border:0;border-radius:6px;overflow:hidden;background:#161616;color:#fff}
+.library-thumbnail-preview img{display:block;width:100%;height:100%;object-fit:contain;transition:transform .18s ease}
+.library-thumbnail-preview:hover img{transform:scale(1.04)}
+.thumbnail-placeholder{display:grid;place-items:center;height:100%;font-size:11px;color:#ccc;padding:8px}
+.thumbnail-duration{position:absolute;right:6px;bottom:6px;padding:2px 5px;border-radius:3px;background:rgba(0,0,0,.8);color:#fff;font-size:11px;font-variant-numeric:tabular-nums}
+.thumbnail-play{position:absolute;inset:0;display:grid;place-items:center;background:rgba(0,0,0,.15);opacity:0;transition:opacity .18s ease;font-size:22px}
+.library-thumbnail-preview:hover .thumbnail-play,.library-thumbnail-preview:focus-visible .thumbnail-play{opacity:1}
+.thumbnail-retry{position:absolute;left:6px;top:6px;font-size:11px;padding:4px 6px;background:var(--surface)}
+@media(max-width:1050px){.library-page .media-card-heading{grid-template-columns:140px minmax(0,1fr)}.library-page .media-primary-actions{grid-column:2;margin:0}.library-page .library-thumbnail{grid-row:1 / 3}.library-page .media-card-actions,.library-page .library-preview{margin-left:160px}}
+@media(max-width:600px){.job-media{grid-template-columns:96px minmax(0,1fr)}.job-media .library-thumbnail{width:96px}.library-page .media-card-heading{grid-template-columns:112px minmax(0,1fr);gap:12px}.library-page .library-thumbnail{grid-row:auto}.library-page .media-primary-actions{grid-column:1 / -1}.library-page .media-card-actions,.library-page .library-preview{margin-left:0}.library-page .media-name h3{font-size:14px}.library-page .media-facts{font-size:11px}.library-page .media-card-actions .quiet{margin-left:0}.thumbnail-retry{min-height:44px}.thumbnail-duration{font-size:10px}}
+@media(prefers-reduced-motion:reduce){.library-thumbnail-preview img,.thumbnail-play{transition:none}}
+
+.bulk-toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 0;border-bottom:1px solid var(--border);margin-bottom:8px}
+.bulk-toolbar label{display:flex;align-items:center;gap:8px;min-height:44px;cursor:pointer}
+.bulk-toolbar small{flex-basis:100%;color:var(--muted)}
+.bulk-toolbar input[type=checkbox],.selection-title .item-select{width:20px;height:20px;min-width:20px;margin:0;accent-color:var(--accent);cursor:pointer}
+.selection-title{display:flex;align-items:center;gap:10px;min-height:44px}
+.library-page .selection-title h3{margin:0}
+.bulk-delete-dialog{max-height:calc(100dvh - 40px);overflow:auto}
+.bulk-delete-list{max-height:220px;overflow:auto;padding-left:24px;overflow-wrap:anywhere}
+.bulk-delete-dialog .error{overflow-wrap:anywhere}
+
+.selection-title .item-select-hit{display:inline-flex;align-items:center;justify-content:center;flex:0 0 44px;height:44px;margin-left:-12px;margin-right:-12px;cursor:pointer}
+
+.bulk-delete-dialog .error{display:block}
+
+/* A single media list contains both files and work in progress. */
+.unified-library .library-surface{padding:0}
+.library-status{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:20px}
+.library-status button,.import-methods button{min-height:44px}
+.library-status button span{margin-left:8px;font-variant-numeric:tabular-nums}
+.unified-library .media-card{transition:background-color .15s ease}
+.unified-library .media-card:hover{background:var(--surface)}
+.unified-library .media-name{min-width:0}
+.unified-library .media-name h3{overflow-wrap:anywhere}
+.activity-mark{aspect-ratio:16/9;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;background:var(--surface);color:var(--muted);font-size:12px;border-radius:6px}
+.activity-card .job-progress-content{max-width:420px;margin-top:12px}
+.activity-card .job-progress-content progress{width:100%}
+.activity-card .job-state{display:inline-flex;margin:4px 0}
+.activity-error{color:var(--danger);overflow-wrap:anywhere;font-size:13px;margin-top:10px}
+.activity-details{margin:12px 0 0 180px;font-size:13px}
+.activity-details summary,.library-history summary,.library-projects>summary{cursor:pointer;min-height:44px;display:flex;align-items:center;gap:8px}
+.activity-details summary::before,.library-history summary::before,.library-projects>summary::before{content:'+'}
+.activity-details[open] summary::before,.library-history[open] summary::before,.library-projects[open]>summary::before{content:'-'}
+.library-history,.library-projects{border-top:1px solid var(--line);padding:12px 0;margin-top:20px}
+.library-history p{color:var(--muted);font-size:13px}
+.ready-label{font-weight:600}
+.completed-activity{border-top:1px solid var(--line);margin-top:12px;padding-top:12px}
+.library-empty{padding:50px 0;text-align:center}
+.library-empty .page-empty{padding:0;min-height:0}
+.library-empty p{color:var(--muted);margin:16px 0 24px}
+.import-page{max-width:900px;margin:0 auto}
+.import-methods{display:flex;gap:8px;margin-bottom:24px}
+.import-body .panel{border:0;padding:0;background:transparent}
+.import-body .dropzone{min-height:280px;border:1px dashed var(--line);transition:border-color .15s,background-color .15s}
+.import-body .dropzone.is-dragging{border-color:var(--ink);background:var(--surface)}
+.import-body input[hidden]{display:none}
+.import-body .dropzone button{margin:12px 0;min-height:44px}
+.import-body .import-limits{margin-top:20px}
+.bulk-delete-dialog[open]{animation:import-reveal .12s ease-out}
+@keyframes import-reveal{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+@media(max-width:1050px){.activity-details{margin-left:160px}}
+@media(max-width:600px){.activity-details{margin-left:0}.library-status{gap:4px}.library-status button{font-size:12px;padding:8px}.import-page .page-heading{align-items:flex-start}.import-page .page-heading p{max-width:230px}.import-page .page-heading button{font-size:12px}.import-body .dropzone{min-height:250px}.mobile-navigation{grid-template-columns:repeat(2,1fr)}.shell-actions .import-trigger{display:inline-flex!important}}
+@media(prefers-reduced-motion:reduce){.unified-library .media-card,.import-body .dropzone{transition:none}.bulk-delete-dialog[open]{animation:none}}
+
+.unified-library .media-list .activity-card>.activity-details{display:block;width:auto;max-width:none;margin:6px 0 0 180px;padding:0;border:0}
+.activity-card .job-waiting{display:block;margin-top:6px}
+.import-methods button[aria-pressed=true]{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
+.import-methods button[aria-pressed=false]{background:var(--surface);color:var(--ink)}
+.bulk-delete-list li{margin-bottom:10px}
+@media(max-width:1050px){.unified-library .media-list .activity-card>.activity-details{margin-left:160px}}
+@media(max-width:600px){.unified-library .media-list .activity-card>.activity-details{margin-left:0}}
+
+.activity-card .media-name>.activity-details{margin:4px 0 0;padding:0;border:0}

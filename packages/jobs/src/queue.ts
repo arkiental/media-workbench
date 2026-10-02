@@ -1,11 +1,12 @@
 import { mkdir, rm, stat, lstat } from 'node:fs/promises';
 import path from 'node:path';
+import { availableParallelism } from 'node:os';
 import type { Artifact, Source, ToolPaths, EncoderCapability, ExecutionContext, Job, MediaInfo } from '../../contracts/src/index.ts';
 import { Store } from './store.ts';
 import { enforceJob, enforceMedia } from '../../core/src/policy.ts';
 import { createProxy, exportMedia, validateMedia } from '../../media/src/index.ts';
 import { downloadMedia, redactError } from '../../../apps/server/src/download.ts';
-import { managedPath, publish, registerSource } from '../../../apps/server/src/storage.ts';
+import { managedPath, overlayPath, publish, registerSource } from '../../../apps/server/src/storage.ts';
 import { withCookies } from '../../../apps/server/src/credentials.ts';
 import { WORKER_SCRATCH_OVERHEAD_BYTES, type IsolatedWorker } from '../../../apps/server/src/worker.ts';
 export class Queue {
@@ -38,10 +39,12 @@ export class Queue {
    if(path.dirname(path.resolve(workDir))!==path.resolve(this.store.dataDir,'work'))throw Error('Unsafe job directory');
    await rm(workDir,{recursive:true,force:true});await mkdir(workDir,{recursive:false,mode:0o700});
    const user=this.store.user(job.ownerId)!;const request=job.request;enforceJob(request,user.policy);
-   const available=this.store.availableBytes(user.id),remaining=this.worker?Math.floor(available/3)-WORKER_SCRATCH_OVERHEAD_BYTES:available;if(remaining<=0)throw Error('Insufficient storage for bounded worker scratch');
-   let ctx:ExecutionContext={signal:controller.signal,workDir,maxRuntimeSeconds:user.policy.maxRuntimeSeconds,maxBytes:Math.min(request.type==='download'?user.policy.maxInputBytes:user.policy.maxOutputBytes,remaining),allowedEncoders:user.policy.allowedEncoders,maxCpuCores:user.policy.maxCpuCores,maxMemoryMiB:user.policy.maxMemoryMiB,bandwidthBytesPerSecond:user.policy.bandwidthBytesPerSecond,maxTransferBytes:user.policy.maxTransferBytes,onPlan:plan=>this.store.updateJob(job.id,{plan}),onProgress:(progress,message)=>{if(!controller.signal.aborted)this.store.updateJob(job.id,{progress,message});},onStage:state=>{if(!controller.signal.aborted)this.store.updateJob(job.id,{state});}};
-   reservation.add(this.worker?3*(ctx.maxBytes!+WORKER_SCRATCH_OVERHEAD_BYTES):ctx.maxBytes!);
-   if(this.worker){const ids=request.type==='export'?[request.recipe.sourceId,request.recipe.audio.sourceId]:request.type==='proxy'?[request.sourceId]:[];const inputs=[];for(const id of ids){if(!id)continue;const s=this.store.get<Source>('source',id,user.id);if(!s)throw Error('Source not found');inputs.push(await managedPath(this.store,s.artifactId));}ctx=await this.worker.context(ctx,inputs);}
+   const copyScratch=request.type==='export'&&request.options.cut!=='exact'&&request.recipe.segments.length>1?2:1;
+   const available=this.store.availableBytes(user.id),remaining=this.worker?Math.floor(available/3)-WORKER_SCRATCH_OVERHEAD_BYTES:Math.floor(available/copyScratch);if(remaining<=0)throw Error('Insufficient storage for bounded worker scratch');
+   let ctx:ExecutionContext={signal:controller.signal,workDir,maxRuntimeSeconds:user.policy.maxRuntimeSeconds,maxBytes:Math.min(request.type==='download'?user.policy.maxInputBytes:user.policy.maxOutputBytes,remaining),allowedEncoders:user.policy.allowedEncoders,maxCpuCores:!this.worker&&user.role==='owner'?availableParallelism():user.policy.maxCpuCores,maxMemoryMiB:user.policy.maxMemoryMiB,bandwidthBytesPerSecond:user.policy.bandwidthBytesPerSecond,maxTransferBytes:user.policy.maxTransferBytes,onPlan:plan=>this.store.updateJob(job.id,{plan}),onProgress:(progress,message)=>{if(!controller.signal.aborted)this.store.updateJob(job.id,{progress,message});},onStage:state=>{if(!controller.signal.aborted)this.store.updateJob(job.id,{state});}};
+   reservation.add(this.worker?3*(ctx.maxBytes!+WORKER_SCRATCH_OVERHEAD_BYTES):copyScratch*ctx.maxBytes!);
+   const overlayImages:Record<string,string>={};if(request.type==='export')for(const o of request.recipe.overlays){if(!this.store.get('overlay',o.imageId,user.id))throw Error('Overlay image not found');overlayImages[o.imageId]=await overlayPath(this.store,o.imageId);}
+   if(this.worker){const ids=request.type==='export'?[request.recipe.sourceId,request.recipe.audio.sourceId]:request.type==='proxy'?[request.sourceId]:[];const inputs=[];for(const id of ids){if(!id)continue;const s=this.store.get<Source>('source',id,user.id);if(!s)throw Error('Source not found');inputs.push(await managedPath(this.store,s.artifactId));}inputs.push(...Object.values(overlayImages));ctx=await this.worker.context(ctx,inputs);}
    let staged:string,name:string,kind:Artifact['kind'],sourceId:string|undefined,verifiedMedia:MediaInfo|undefined;
    if(request.type==='download'){
     const result=await withCookies(this.store,user.id,request.download.cookieId,workDir,opts=>downloadMedia(request.download,this.tools,{...ctx,...opts,policy:{...user.policy,maxInputBytes:Math.min(user.policy.maxInputBytes,remaining)},testOrigin:this.testOrigin}));staged=result.path;name=result.name;kind='download';
@@ -52,7 +55,7 @@ export class Queue {
     this.store.updateJob(job.id,{state:'processing'});
     if(request.type==='proxy')verifiedMedia=await createProxy(input,staged,this.tools,ctx);
     else {let extraAudio:string|undefined;if(request.recipe.audio.sourceId){const audio=this.store.get<Source>('source',request.recipe.audio.sourceId,user.id);if(!audio)throw Error('Audio source not found');extraAudio=await managedPath(this.store,audio.artifactId);this.store.lease(audio.artifactId,(user.policy.maxRuntimeSeconds+60)*1000);}
-     const result=await exportMedia(input,staged,request.recipe,request.options,this.tools,ctx,extraAudio);verifiedMedia=result.media;this.store.updateJob(job.id,{plan:result.plan});
+     const result=await exportMedia(input,staged,request.recipe,request.options,this.tools,ctx,extraAudio,overlayImages);verifiedMedia=result.media;this.store.updateJob(job.id,{plan:result.plan});
     }
    }
    if(controller.signal.aborted)throw Error('Operation cancelled');this.store.updateJob(job.id,{state:'validating'});

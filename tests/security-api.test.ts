@@ -30,7 +30,7 @@ test('independent authenticated API adversarial cases', {timeout:60000},async t=
       assert.equal((await app.inject({method:'POST',url:'/api/v1/pairings',headers:headers(readToken),payload:{name:'escalation',scopes:['read','submit','manage']}})).statusCode,403);
     });
     await t.test('cross-user artifact, frame, waveform, job, cancellation and event access is denied',async()=>{
-      for(const url of [`/api/v1/artifacts/${a.artifact.id}/content`,`/api/v1/sources/${a.source.id}/frames?around=0`,`/api/v1/sources/${a.source.id}/frame?pts=0`,`/api/v1/sources/${a.source.id}/waveform`,`/api/v1/jobs/${aliceJob.id}`])assert.equal((await app.inject({url,headers:headers(bobToken)})).statusCode,404,url);
+      for(const url of [`/api/v1/artifacts/${a.artifact.id}/content`,`/api/v1/artifacts/${a.artifact.id}/thumbnail`,`/api/v1/sources/${a.source.id}/frames?around=0`,`/api/v1/sources/${a.source.id}/frame?pts=0`,`/api/v1/sources/${a.source.id}/waveform`,`/api/v1/jobs/${aliceJob.id}`])assert.equal((await app.inject({url,headers:headers(bobToken)})).statusCode,404,url);
       const cancel=await app.inject({method:'POST',url:`/api/v1/jobs/${aliceJob.id}/cancel`,headers:headers(bobToken)});assert(cancel.statusCode>=400);assert.equal(app.store.job(aliceJob.id)?.state,'queued');
       for(const url of ['/api/v1/jobs','/api/v1/events','/api/v1/sources','/api/v1/artifacts']){const response=await app.inject({url,headers:headers(bobToken)});assert.equal(response.statusCode,200);assert(!response.body.includes(a.artifact.id));assert(!response.body.includes(a.source.id));assert(!response.body.includes(aliceJob.id));}
     });

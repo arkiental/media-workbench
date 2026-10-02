@@ -43,20 +43,7 @@ async function navigate(name: string) {
   await page.locator('main').waitFor();
 }
 
-async function tool(name: string) {
-  const rail = page.getByRole('navigation', { name: 'Editing tools' });
-  const candidates = rail.getByRole('button', { name: name === 'Cut' ? /^(Cut|Trim)$/ : name, exact: true });
-  if (await candidates.count() && await candidates.first().isVisible()) {
-    await candidates.first().click();
-    const menu = rail.locator('.more-editor-tools');
-    if (await menu.evaluate(element => (element as HTMLDetailsElement).open)) await menu.locator('summary').click();
-    return;
-  }
-  const menu = rail.locator('.more-editor-tools');
-  if (!(await menu.evaluate(element => (element as HTMLDetailsElement).open))) await menu.locator('summary').click();
-  await rail.getByRole('button', { name: name === 'Cut' ? /^(Cut|Trim)$/ : name, exact: true }).click();
-  if (await menu.evaluate(element => (element as HTMLDetailsElement).open)) await menu.locator('summary').click();
-}
+async function tool(name:string) { await page.getByRole('navigation',{name:'Editing tools'}).getByRole('button',{name,exact:true}).click(); }
 
 async function noOverflow(label: string) {
   const result = await page.evaluate(() => {
@@ -164,11 +151,10 @@ async function mobileToolAccess(label: string) {
   const nav = await page.locator('.mobile-navigation').boundingBox();
   const rail = page.getByRole('navigation', { name: 'Editing tools' });
   assert(nav);
-  const controls = [rail.getByRole('button', { name: 'Trim', exact: true }),
+  const controls = [rail.getByRole('button', { name: 'Cut', exact: true }),
     rail.getByRole('button', { name: 'Text', exact: true }),
     rail.getByRole('button', { name: 'Audio', exact: true }),
-    rail.getByRole('button', { name: 'Transform', exact: true }),
-    rail.locator('summary')];
+    rail.getByRole('button', { name: 'Transform', exact: true })];
   for (const control of controls) {
     const box = await control.boundingBox();
     assert.ok(box && box.y >= 0 && box.y + box.height <= nav.y + 1,
@@ -179,41 +165,21 @@ async function mobileToolAccess(label: string) {
       return hit === element || !!hit && element.contains(hit);
     }), true, `${label}: editing tool is hit-testable in the initial viewport`);
   }
-  checks.push(`${label}: Trim, Text, Audio, Crop and More stay visible and hit-testable in the initial viewport`);
+  checks.push(`${label}: Text, Audio, Transform and Cut stay visible and hit-testable in the initial viewport`);
 
   for (const [name, heading] of [['Cut', 'Trim section 1'], ['Text', 'Text'], ['Audio', 'Audio'], ['Transform', 'Transform']]) {
     await tool(name);
-    await page.waitForFunction(() => {
-      const heading = document.querySelector('.context-panel-heading');
+    await page.waitForFunction(transform => {
+      const heading = document.querySelector(transform ? '.viewport-transform-controls' : '.context-panel-heading');
       const rail = document.querySelector('.editor-tool-rail');
       if (!heading || !rail) return false;
       const box = heading.getBoundingClientRect();
       return box.top >= 0 && box.bottom <= rail.getBoundingClientRect().top;
-    });
+    }, name === 'Transform');
     assert.equal(await page.locator('.context-panel-heading > span').innerText(), heading);
   }
-  for (const heading of ['Media', 'Project']) {
-    const menu = rail.locator('.more-editor-tools');
-    await menu.locator('summary').click();
-    const menuBox = await menu.locator('.more-tools-menu').boundingBox();
-    const railBox = await rail.boundingBox();
-    assert.ok(menuBox && railBox && menuBox.y >= 0 && menuBox.y + menuBox.height < railBox.y + 1,
-      `${label}: More opens upward inside the viewport`);
-    const control = menu.getByRole('button', { name: heading, exact: true });
-    assert.equal(await control.evaluate(element => {
-      const box = element.getBoundingClientRect();
-      const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
-      return hit === element || !!hit && element.contains(hit);
-    }), true, `${label}: More menu action is hit-testable`);
-    await control.click();
-    await page.waitForFunction(() => {
-      const box = document.querySelector('.context-panel-heading')?.getBoundingClientRect();
-      const rail = document.querySelector('.editor-tool-rail')?.getBoundingClientRect();
-      return !!box && !!rail && box.top >= 0 && box.bottom <= rail.top;
-    });
-    assert.equal(await page.locator('.context-panel-heading > span').innerText(), heading);
-    assert.equal(await menu.evaluate(element => (element as HTMLDetailsElement).open), false);
-  }
+  assert.equal(await rail.getByRole('button').count(),5);
+  assert.equal(await rail.getByRole('button',{name:'Media',exact:true}).count(),0);
   await page.getByRole('button', { name: 'Done', exact: true }).click();
   await page.waitForFunction(() => {
     const preview = document.querySelector('.cut-preview')?.getBoundingClientRect();
@@ -221,7 +187,7 @@ async function mobileToolAccess(label: string) {
     return !!preview && !!rail && preview.top >= 0 && preview.top < rail.top;
   });
   assert.equal(await page.locator('.editor-context-panel').isVisible(), false);
-  checks.push(`${label}: tool taps reveal panel headings, More offers Media and Project, and Done returns to the preview`);
+  checks.push(`${label}: tool taps reveal panel headings, the rail contains only Text, Audio, Transform and Cut, and Done returns to the preview`);
   await tool('Cut');
   await page.waitForFunction(() => {
     const box = document.querySelector('.context-panel-heading')?.getBoundingClientRect();
@@ -264,16 +230,18 @@ try {
   await page.getByRole('button', { name: 'Connect', exact: true }).click();
   await page.locator('.app-header').waitFor();
   await navigate('Library');
-  await page.getByRole('heading', { name: 'Your media', exact: true }).waitFor();
+  await page.getByRole('heading', { name: 'Library', exact: true }).waitFor();
   await capture('after-library-empty-desktop');
-  await navigate('Jobs');
+  await navigate('Library');
   await noOverflow('Empty jobs desktop');
   await navigate('Editor');
   await page.getByRole('heading', { name: 'Choose a video to edit' }).waitFor();
   checks.push('Empty library, jobs and editor expose useful visible states');
 
-  await page.getByRole('button', { name: 'Add media', exact: true }).first().click();
+  await page.getByRole('button', { name: 'Import', exact: true }).first().click();
   await page.getByLabel('Local media', { exact: true }).setInputFiles({ name: 'Sample video.mp4', mimeType: 'video/mp4', buffer: await readFile(fixture) });
+  await page.getByRole('heading',{name:'Library',exact:true}).waitFor();
+  await page.locator('.media-card').filter({hasText:'Sample video.mp4'}).getByRole('button',{name:'Edit source',exact:true}).click();
   await page.locator('.cut-workspace').waitFor({ timeout: 45000 });
   await page.waitForFunction(() => {
     const video = document.querySelector('video');
@@ -309,9 +277,12 @@ try {
   });
   checks.push('Real source-region playback starts and stops at the edited boundaries');
 
-  for (const viewport of [{ width: 1528, height: 900 }, { width: 1366, height: 768 }, { width: 1024, height: 768 }]) {
+  for (const viewport of [{ width: 1528, height: 900 }, { width: 1366, height: 768 }, { width: 1280, height: 720 }, { width: 1024, height: 768 }, { width: 900, height: 600 }, { width: 851, height: 600 }]) {
     await page.setViewportSize(viewport);
     await noOverflow(`Editor ${viewport.width}x${viewport.height}`);
+    const rail = await page.getByRole('navigation', { name: 'Editing tools' }).boundingBox();
+    const more = await page.getByRole('navigation',{name:'Editing tools'}).getByRole('button',{name:'Cut',exact:true}).boundingBox();
+    assert(rail && more && more.y + more.height <= rail.y + rail.height + 1, 'More tools fits inside the editor rail');
     await capture(`after-editor-${viewport.width}x${viewport.height}`);
   }
 
@@ -329,7 +300,7 @@ try {
         panel: document.querySelector('.editor-context-panel')?.getBoundingClientRect().top,
       };
     });
-    assert.ok(positions.player! < positions.timeline! && positions.timeline! < positions.panel!, 'Mobile editor follows preview, timeline, inspector order with persistent tools');
+    assert.ok(positions.player! < positions.panel! && positions.panel! < positions.timeline!, 'Mobile editor keeps the inspector beside the workflow: preview, inspector, timeline, with persistent tools');
     if (viewport.width === 844) {
       const frame = await page.evaluate(() => {
         const video = document.querySelector<HTMLVideoElement>('video[aria-label="Source playback"]')!;
@@ -342,7 +313,7 @@ try {
           bottom: box.top + (box.height + height) / 2, left: box.left + (box.width - width) / 2,
           right: box.left + (box.width + width) / 2, railTop: rail.top, viewportWidth: innerWidth };
       });
-      assert.equal(frame.fit, 'contain');
+      assert.equal(frame.fit, 'fill');
       assert.ok(frame.top >= 0 && frame.bottom <= frame.railTop && frame.left >= 0 && frame.right <= frame.viewportWidth,
         `Landscape shows the whole original frame above editing tools: ${JSON.stringify(frame)}`);
       checks.push('Short landscape viewport contains the whole original frame above persistent tools and navigation');
@@ -368,31 +339,14 @@ try {
   assert.ok(Number(await startHandle.getAttribute('aria-valuenow')) > .51, 'Dragging the trim handle updates actual source-time bounds');
   checks.push('Mobile trim handles expose 44px hit areas and both keyboard and pointer edits update the actual recipe');
   await tool('Text');
-  await page.getByRole('button', { name: 'Add text overlay at playhead', exact: true }).click();
-  await page.getByLabel('Text overlay 1 text', { exact: true }).fill('A local preview');
-  await page.getByLabel('Text size', { exact: true }).fill('20');
-  await page.getByLabel('Text position x', { exact: true }).fill('50');
-  await page.getByLabel('Text position y', { exact: true }).fill('50');
-  const resizeText = page.getByRole('slider', { name: 'Resize text nw', exact: true });
-  await resizeText.focus();
-  await page.keyboard.press('ArrowUp');
-  await waitValue('Text size', '21');
-  await page.keyboard.press('Shift+ArrowDown');
-  await waitValue('Text size', '11');
-  await page.keyboard.press('Home');
-  await waitValue('Text size', '8');
-  await page.keyboard.press('End');
-  await waitValue('Text size', '400');
-  await page.getByLabel('Text size', { exact: true }).fill('20');
-  await page.getByRole('button', { name: 'Move selected text', exact: true }).focus();
-  await page.keyboard.press('Shift+ArrowRight');
-  await waitValue('Text position x', '51');
-  await page.keyboard.press('Shift+ArrowDown');
-  await waitValue('Text position y', '51');
-  assert.equal(await page.getByLabel('Text overlay 1 text', { exact: true }).inputValue(), 'A local preview');
-  assert.equal(await page.getByLabel('Text font', { exact: true }).inputValue(), 'Arial');
-  assert.equal(await page.getByLabel('Volume multiplier', { exact: true }).inputValue(), '1');
-  checks.push('Canvas text has keyboard resizing and movement; content, font and audio stay unchanged');
+  await page.getByRole('checkbox',{name:'Caption above video',exact:true}).check();
+  await page.getByLabel('Caption text',{exact:true}).fill('A local preview');
+  await page.getByLabel('Caption text size',{exact:true}).fill('20');
+  await page.getByLabel('Caption padding',{exact:true}).fill('12');
+  assert.equal(await page.getByLabel('Caption text',{exact:true}).inputValue(),'A local preview');
+  assert.equal(await page.getByLabel('Volume multiplier',{exact:true}).inputValue(),'1');
+  assert.equal(await page.locator('.viewport-caption').innerText(),'A local preview');
+  checks.push('Caption appears above the picture, updates live and leaves audio unchanged');
   await noOverflow('Mobile text inspector');
   await touchTargets('Mobile text inspector');
   await capture('after-editor-text-mobile');
@@ -453,6 +407,10 @@ try {
   assert.equal(await submit.isDisabled(), true, 'Unreviewed export cannot be submitted');
   await dialog.getByRole('button', { name: /^(Resolve export plan|Review export plan)$/ }).click();
   await dialog.locator('.plan').waitFor({ timeout: 30000 });
+  await dialog.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  const planBox = await dialog.locator('.plan').boundingBox();
+  const actionsBox = await dialog.locator('.panel > .actions').boundingBox();
+  assert(planBox && actionsBox && planBox.y + planBox.height <= actionsBox.y + 1, 'Reviewed settings appear before the final export actions');
   await noOverflow('Mobile reviewed export');
   await touchTargets('Mobile reviewed export');
   await capture('after-export-plan-mobile');
@@ -484,7 +442,7 @@ try {
     await textContrast(`Library ${viewport.width}px`);
     if (viewport.width <= 850) await touchTargets(`Library ${viewport.width}px`);
     await capture(`after-library-${viewport.width}`);
-    await navigate('Jobs');
+    await navigate('Library');
     await noOverflow(`Jobs ${viewport.width}px`);
     await textContrast(`Jobs ${viewport.width}px`);
     if (viewport.width <= 850) await touchTargets(`Jobs ${viewport.width}px`);
@@ -498,17 +456,18 @@ try {
       await capture(`after-settings-${tab.toLowerCase()}-${viewport.width}`);
     }
     if (viewport.width === 1528) {
-      await page.locator('.app-header').getByRole('button', { name: 'Add media', exact: true }).click();
+      await page.locator('.app-header').getByRole('button', { name: 'Import', exact: true }).click();
       await capture('after-import-desktop');
     }
   }
 
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.locator('.app-header').getByRole('button', { name: 'Add media', exact: true }).click();
+  await page.locator('.app-header').getByRole('button', { name: 'Import', exact: true }).click();
   await noOverflow('Mobile import and URL download');
   await touchTargets('Mobile import and URL download');
   await capture('after-import-mobile');
-  await page.getByLabel('One URL per line', { exact: true }).fill('not a media URL');
+  await page.getByRole('button',{name:'From a link',exact:true}).click();
+  await page.getByLabel('Video or audio links', { exact: true }).fill('not a media URL');
   await page.getByRole('button', { name: 'Inspect available media', exact: true }).click();
   await page.getByRole('alert').waitFor();
   await noOverflow('Mobile input error state');

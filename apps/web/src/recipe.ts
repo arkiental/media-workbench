@@ -1,7 +1,7 @@
 import type { Recipe } from '../../../packages/contracts/src/index';
 
 export function initialRecipe(sourceId:string,duration:number): Recipe {
-  return {schemaVersion:1,sourceId,segments:[{in:0,out:duration}],rotate:0,text:[],captions:[],subtitleMode:'burn',audio:{mode:'keep',track:0,volume:1,fadeIn:0,fadeOut:0,normalize:false}};
+  return {schemaVersion:1,sourceId,segments:[{in:0,out:duration}],rotate:0,text:[],captions:[],subtitleMode:'burn',overlays:[],audio:{mode:'keep',track:0,volume:1,fadeIn:0,fadeOut:0,normalize:false}};
 }
 export function removeInterval(recipe:Recipe,start:number,end:number):Recipe {
   if(end<=start) throw new Error('Removal end must be after start.');

@@ -6,7 +6,8 @@ import { Field, Panel } from '../../../packages/ui/src/index';
 import { api, ApiError } from './api';
 import { readPreference, writePreference } from './drafts';
 import { Editor } from './Editor';
-import { Input, Queue, Library, SavedProjects, Presets, Integrations, Settings, Administration } from './Pages';
+import { EditorIcon } from './EditorIcon';
+import { Input, Library, SavedProjects, Presets, Integrations, Settings, Administration } from './Pages';
 import './styles.css';
 import './workspace.css';
 import './contextual-editor.css';
@@ -14,9 +15,20 @@ import './monochrome.css';
 import './pages.css';
 import './editor.css';
 import './responsive.css';
+import './library.css';
+import './trim.css';
+import './layout.css';
+import './transform.css';
+import './caption.css';
+import './refine.css';
+import './slider.css';
+import './audio.css';
+import './overlay.css';
+import './link-import.css';
 
 type Task = (work: () => Promise<unknown>) => Promise<void>;
-const primaryTabs = ['Library', 'Editor', 'Queue'] as const;
+const primaryTabs = ['Library', 'Editor'] as const;
+const tabIcons: Record<string, string> = { Library: 'library', Editor: 'editor' };
 
 function App() {
   const [caps, setCaps] = useState<Capabilities>();
@@ -25,7 +37,7 @@ function App() {
   const [sources, setSources] = useState<Source[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [tab, setTab] = useState<string>('Editor');
+  const [tab, setTab] = useState<string>('Library');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
@@ -64,12 +76,15 @@ function App() {
     if (cause instanceof ApiError && cause.status === 401) setAuthNeeded(true);
     else setError(cause.message);
   }); }, []);
+  const hasActiveJobs=jobs.some(job=>!['completed','failed','cancelled','interrupted'].includes(job.state));
   useEffect(() => {
     if (!caps) return;
     let active = true;
-    const timer = setInterval(() => refresh().catch(cause => { if (active) setError(`Could not refresh media: ${cause.message}`); }), 1800);
-    return () => { active = false; clearInterval(timer); };
-  }, [caps]);
+    let timer:number;
+    const poll=async()=>{try{await refresh();}catch(cause){if(active)setError(`Could not refresh media: ${cause instanceof Error?cause.message:String(cause)}`);}finally{if(active)timer=window.setTimeout(poll,hasActiveJobs?300:1800);}};
+    timer=window.setTimeout(poll,hasActiveJobs?300:1800);
+    return () => { active = false; clearTimeout(timer); };
+  }, [caps,hasActiveJobs]);
   const edit = (id: string) => {
     setProject(undefined); setSourceId(id); navigate('Editor');
     writePreference('mw:last:' + caps!.user.id, JSON.stringify({ sourceId: id }));
@@ -78,7 +93,7 @@ function App() {
   if (!caps) return <main className="login">
     <div className="login-heading"><strong>Media Workbench</strong><span>Local workspace</span></div>
     <h1>{authNeeded ? 'Connect to your workspace' : 'Opening your workspace'}</h1>
-    <p>Enter the access token from your local setup to open your media.</p>
+
     {error && <p role="alert" className="error">{error}</p>}
     {authNeeded ? <form onSubmit={event => { event.preventDefault(); void run(async () => { await api.session(token); setToken(''); await connect(); }); }}>
       <Field label="Access token"><input type="password" autoComplete="off" value={token} onChange={event => setToken(event.target.value)} required /></Field>
@@ -91,40 +106,39 @@ function App() {
   const selectedArtifact = artifacts.find(artifact => artifact.id === selected?.artifactId);
   const editing = tab === 'Editor' && selected && selectedArtifact;
   const activeJobs = jobs.filter(job => !['completed', 'failed', 'cancelled', 'interrupted'].includes(job.state)).length;
-  const navigation = () => primaryTabs.map(next => <button key={next} aria-label={next === 'Queue' ? 'Jobs' : next}
+  const navigation = () => primaryTabs.map(next => <button key={next} aria-label={next}
     aria-current={tab === next ? 'page' : undefined} onClick={() => navigate(next)}>
-    <span>{next === 'Queue' ? 'Jobs' : next}</span>
-    {next === 'Queue' && activeJobs > 0 && <span className="job-count" aria-hidden="true">{activeJobs}</span>}
+    <EditorIcon name={tabIcons[next]} size={18}/><span>{next}</span>
+    {next === 'Library' && activeJobs > 0 && <span className="job-count" aria-hidden="true">{activeJobs}</span>}
   </button>);
 
   return <div className={`app-shell ${editing ? 'editing-shell' : ''}`}>
     <a className="skip-link" href="#workspace-content">Skip to workspace</a>
     <header className="app-header">
-      <div className="brand"><strong>Media Workbench</strong></div>
+      <div className="brand"><span className="brand-glyph" aria-hidden="true"><EditorIcon name="video" size={16}/></span><strong>Media Workbench</strong></div>
       <nav className="desktop-navigation" aria-label="Main">{navigation()}</nav>
       <div className="shell-actions"><div id="editor-header-actions" />
-        {!editing && <button className="primary" onClick={() => navigate('Input')}>Add media</button>}
-        <button aria-current={tab === 'Settings' ? 'page' : undefined} onClick={() => navigate('Settings')}>Settings</button>
+        <button className="primary import-trigger" aria-current={tab === 'Input' ? 'page' : undefined} onClick={() => navigate('Input')}><EditorIcon name="upload" size={17}/>Import</button>
+        <button className="settings-button" aria-label="Settings" title="Settings" aria-current={tab === 'Settings' ? 'page' : undefined} onClick={() => navigate('Settings')}><EditorIcon name="settings" size={18}/><span>Settings</span></button>
       </div>
     </header>
     <main id="workspace-content" tabIndex={-1} data-page={tab} className={editing ? 'editor-main page-content' : 'page-content'} aria-busy={busy}>
-      {error && <div role="alert" className="error"><span>{error}</span><button aria-label="Dismiss error" onClick={() => setError('')}>Dismiss</button></div>}
-      {notice && <p role="status" className="notice">{notice}</p>}
-      {tab === 'Input' && <Input caps={caps} run={run} refresh={refresh} edit={edit} setNotice={setNotice} />}
-      {tab === 'Queue' && <Queue jobs={jobs} sources={sources} artifacts={artifacts} run={run} refresh={refresh} edit={edit} setNotice={setNotice} />}
-      {tab === 'Library' && <><div className="page-heading"><div><h1>Your media</h1><p>Files, finished exports, and saved projects.</p></div><button onClick={() => void run(refresh)} disabled={busy}>Refresh</button></div>
-        <Library sources={sources} artifacts={artifacts} run={run} refresh={refresh} edit={edit} setNotice={setNotice} /><SavedProjects run={run} onProject={openProject} /></>}
+      {error && <div role="alert" className="error"><EditorIcon name="alert" size={18}/><span>{error}</span><button aria-label="Dismiss error" onClick={() => setError('')}>Dismiss</button></div>}
+      {notice && <p role="status" className="notice"><EditorIcon name="saved" size={18} tone="ok"/><span>{notice}</span></p>}
+      {tab === 'Input' && <Input caps={caps} run={run} refresh={refresh} done={()=>navigate('Library')} setNotice={setNotice} />}
+      {tab === 'Library' && <><div className="page-heading"><div><h1>Library</h1><p>Your videos and their progress, together.</p></div><button onClick={() => void run(refresh)} disabled={busy}><EditorIcon name="refresh" size={16}/>Refresh</button></div>
+        <Library jobs={jobs} onImport={()=>navigate('Input')} sources={sources} artifacts={artifacts} run={run} refresh={refresh} edit={edit} setNotice={setNotice} /><details className="library-projects"><summary>Saved projects</summary><SavedProjects run={run} onProject={openProject} /></details></>}
       {tab === 'Editor' && (editing ? <Editor jobs={jobs} key={sourceId + '-' + (project?.id || '')} source={selected} artifact={selectedArtifact} sources={sources} artifacts={artifacts} caps={caps} project={project} run={run} refresh={refresh} setNotice={setNotice} />
-        : <section className="empty-state editor-empty"><span className="empty-label">Editor</span><h1>Choose a video to edit</h1><p>Add a file, paste a link, or open a saved project.</p><div className="actions"><button className="primary" onClick={() => navigate('Input')}>Add media</button><button onClick={() => navigate('Library')}>Open library</button></div></section>)}
-      {tab === 'Settings' && <><div className="page-heading"><div><h1>Settings</h1><p>Appearance, saved presets, and local connections.</p></div></div>
+        : <section className="empty-state editor-empty"><span className="empty-glyph" aria-hidden="true"><EditorIcon name="editor" size={28}/></span><span className="empty-label">Editor</span><h1>Choose a video to edit</h1><p>Import a file or pick something from your library to start cutting, captioning and exporting.</p><div className="actions"><button className="primary" onClick={() => navigate('Input')}><EditorIcon name="plus" size={17}/>Import</button><button onClick={() => navigate('Library')}><EditorIcon name="library" size={17}/>Open library</button></div></section>)}
+      {tab === 'Settings' && <><div className="page-heading"><div><h1>Settings</h1></div></div>
         <nav className="settings-nav" aria-label="Settings">{['General', 'Presets', 'Integrations', ...(caps.user.role === 'owner' ? ['Administration'] : [])].map(next => <button key={next} aria-current={settingsTab === next ? 'page' : undefined} onClick={() => setSettingsTab(next)}>{next}</button>)}</nav>
-        {settingsTab === 'General' && <><Panel title="Appearance"><Field label="Color theme"><select value={theme} onChange={event => setTheme(event.target.value)}><option value="system">Follow system</option><option value="light">White</option><option value="dark">Black</option></select></Field><p className="muted">Remembered on this device.</p></Panel><Settings caps={caps} run={run} setNotice={setNotice} /></>}
+        {settingsTab === 'General' && <div className="general-settings-layout"><Panel title="Appearance"><Field label="Color theme"><select value={theme} onChange={event => setTheme(event.target.value)}><option value="system">Follow system</option><option value="light">White</option><option value="dark">Black</option></select></Field></Panel><Settings caps={caps} run={run} setNotice={setNotice} /></div>}
         {settingsTab === 'Presets' && <Presets run={run} onProject={openProject} />}
         {settingsTab === 'Integrations' && <Integrations caps={caps} run={run} setNotice={setNotice} />}
         {settingsTab === 'Administration' && caps.user.role === 'owner' && <Administration run={run} setNotice={setNotice} />}
       </>}
     </main>
-    <footer className="workspace-footer"><span>{desktopBridge() ? 'Desktop' : caps.mode === 'shared' ? 'Shared workspace' : 'Local workspace'}</span><span>{caps.user.name}</span></footer>
+    <footer className="workspace-footer"><span><EditorIcon name="monitor" size={14}/>{desktopBridge() ? 'Desktop' : caps.mode === 'shared' ? 'Shared workspace' : 'Local workspace'}</span><span><EditorIcon name="user" size={14}/>{caps.user.name}</span></footer>
     <nav className="mobile-navigation" aria-label="Mobile">{navigation()}</nav>
   </div>;
 }

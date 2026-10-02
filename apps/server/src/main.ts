@@ -8,7 +8,7 @@ try {
   const requested=process.env.MW_WORKER_IMAGE;if(!requested||!/^[a-z0-9][a-z0-9./:_-]{1,200}$/.test(requested))throw Error('Isolated/shared mode requires an explicitly built MW_WORKER_IMAGE');
   const image=(await runProcess('docker',['image','inspect',requested,'--format','{{.Id}}'])).stdout.toString().trim();workerConfig={image,proxyPath:path.resolve('deploy/egress/proxy.mjs'),relayPath:path.resolve('deploy/egress/relay.mjs')};
  }
- const app=await createServer({dataDir,ownerToken:process.env.MW_OWNER_TOKEN,desktopSecret:process.env.MW_DESKTOP_SECRET,host:process.env.MW_HOST||'127.0.0.1',shared:process.env.MW_SHARED==='1',publicOrigin:process.env.MW_PUBLIC_ORIGIN,workerConfig});
+ const app=await createServer({dataDir,ownerToken:process.env.MW_OWNER_TOKEN,desktopSecret:process.env.MW_DESKTOP_SECRET,host:process.env.MW_HOST||'127.0.0.1',shared:process.env.MW_SHARED==='1',publicOrigin:process.env.MW_PUBLIC_ORIGIN,tunnelPrototype:process.env.MW_TUNNEL_PROTOTYPE==='1',workerConfig});
  await app.listen({host:process.env.MW_HOST||'127.0.0.1',port:Number(process.env.MW_PORT??4319)});
  const address=app.server.address();const port=typeof address==='object'&&address?address.port:4319;
  console.log(JSON.stringify({event:'ready',port,url:`http://127.0.0.1:${port}`,credentialFile:process.env.MW_OWNER_TOKEN?undefined:path.join(dataDir,'owner-token')}));

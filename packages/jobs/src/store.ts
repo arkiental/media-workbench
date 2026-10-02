@@ -9,6 +9,7 @@ export const hashToken=(token:string)=>createHash('sha256').update(token).digest
 export class Store {
  private reservations=new Map<string,number>();
  private deleting=new Set<string>();
+ private holds=new Map<string,number>();
  private lockFile:string;
  readonly db:DatabaseSync; readonly dataDir:string;
  constructor(dataDir:string){
@@ -29,6 +30,19 @@ export class Store {
     CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS leases(id TEXT PRIMARY KEY,until TEXT NOT NULL);
     PRAGMA user_version=1;`);
+  // Upgrade old preview locks after exclusive startup: no previous service can
+  // still be reading. Native handoff files retain their persistent leases.
+  if(!this.db.prepare('SELECT 1 FROM settings WHERE key=?').get('scoped-preview-holds-v1')){
+   this.db.exec("BEGIN IMMEDIATE; DELETE FROM leases WHERE id NOT IN (SELECT id FROM objects WHERE kind='handoff'); INSERT INTO settings(key,value) VALUES('scoped-preview-holds-v1','true'); COMMIT;");
+  }
+  // Handoffs are separate files. Preserve their expiry, but release legacy locks
+  // on the library original after exclusive startup (no copy can still be running).
+  if(!this.db.prepare('SELECT 1 FROM settings WHERE key=?').get('independent-handoffs-v1')){
+   this.db.exec(`BEGIN IMMEDIATE;
+    UPDATE objects SET payload=json_set(payload,'$.expiresAt',MAX(COALESCE(json_extract(payload,'$.expiresAt'),''),(SELECT until FROM leases WHERE leases.id=objects.id))) WHERE kind='handoff' AND id IN (SELECT id FROM leases);
+    DELETE FROM leases WHERE id IN (SELECT id FROM objects WHERE kind='handoff');
+    INSERT INTO settings(key,value) VALUES('independent-handoffs-v1','true'); COMMIT;`);
+  }
  }
  close(){this.db.close();if(existsSync(this.lockFile)&&readFileSync(this.lockFile,'utf8')===String(process.pid))unlinkSync(this.lockFile);}
  user(id:string):User|undefined {const u=this.db.prepare('SELECT * FROM users WHERE id=?').get(id) as any;return u?{id:u.id,name:u.name,role:u.role,policy:{...defaultPolicy(u.role),...JSON.parse(u.policy)}}:undefined;}
@@ -63,7 +77,8 @@ export class Store {
  beginArtifactDelete(id:string){if(this.deleting.has(id)||this.leased(id))throw Error('Artifact is protected by an active transfer or native handoff lease');this.deleting.add(id);}
  endArtifactDelete(id:string){this.deleting.delete(id);}
  lease(id:string,milliseconds:number){if(this.deleting.has(id))throw Error('Artifact deletion is in progress');this.db.prepare('INSERT INTO leases VALUES(?,?) ON CONFLICT(id) DO UPDATE SET until=MAX(until,excluded.until)').run(id,new Date(Date.now()+milliseconds).toISOString());}
- leased(id:string){const r=this.db.prepare('SELECT until FROM leases WHERE id=?').get(id) as any;return !!r&&r.until>new Date().toISOString();}
+ holdArtifact(id:string){if(this.deleting.has(id))throw Error('Artifact deletion is in progress');this.holds.set(id,(this.holds.get(id)||0)+1);let released=false;return()=>{if(released)return;released=true;const remaining=(this.holds.get(id)||1)-1;if(remaining)this.holds.set(id,remaining);else this.holds.delete(id);};}
+ leased(id:string){if(this.holds.has(id))return true;const r=this.db.prepare('SELECT until FROM leases WHERE id=?').get(id) as any;return !!r&&r.until>new Date().toISOString();}
   diskUsage(owner:string){return this.all<Artifact>('artifact',owner).reduce((n,a)=>n+a.bytes,0)+this.all<{bytes:number}>('handoff',owner).reduce((n,a)=>n+a.bytes,0);}
  availableBytes(owner:string){return (this.user(owner)?.policy.diskBytes||0)-this.diskUsage(owner)-(this.reservations.get(owner)||0);}
  reserve(owner:string){let amount=0,closed=false;return {add:(bytes:number)=>{if(closed||!Number.isSafeInteger(bytes)||bytes<0)throw Error('Invalid storage reservation');if(bytes>this.availableBytes(owner))throw Error('Storage quota exceeded');amount+=bytes;this.reservations.set(owner,(this.reservations.get(owner)||0)+bytes);},release:()=>{if(closed)return;closed=true;this.reservations.set(owner,Math.max(0,(this.reservations.get(owner)||0)-amount));},get bytes(){return amount;}};}

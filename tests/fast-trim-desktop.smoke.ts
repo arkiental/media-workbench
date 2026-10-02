@@ -1,0 +1,40 @@
+import assert from 'node:assert/strict';
+import {mkdir,mkdtemp,readFile,writeFile} from 'node:fs/promises';
+import {resolve,join} from 'node:path';
+import {createHash} from 'node:crypto';
+import {_electron as electron} from 'playwright';
+import {discoverTools,runProcess,validateMedia} from '../packages/media/src/index.ts';
+
+const root=resolve('test-output/fast-trim-desktop');await mkdir(root,{recursive:true});
+const work=await mkdtemp(join(root,'run-')),tools=await discoverTools(),fixture=join(work,'Generated trim sample.mp4');
+await runProcess(tools.ffmpeg,['-v','error','-f','lavfi','-i','testsrc2=size=640x360:rate=30:duration=10','-f','lavfi','-i','sine=frequency=440:duration=10','-c:v','libx264','-preset','fast','-g','30','-keyint_min','30','-sc_threshold','0','-c:a','aac',fixture]);
+const originalHash=createHash('sha256').update(await readFile(fixture)).digest('hex');
+const environment=Object.fromEntries(Object.entries({...process.env,MW_DATA_DIR:join(work,'service')}).filter((entry):entry is [string,string]=>entry[1]!==undefined));delete environment.ELECTRON_RUN_AS_NODE;
+const desktop=await electron.launch({executablePath:resolve('release/Media Workbench-win32-x64/media-workbench.exe'),args:[`--user-data-dir=${join(work,'profile')}`],env:environment,timeout:70000});
+try{
+ const page=await desktop.firstWindow();page.setDefaultTimeout(45000);const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
+ await page.getByRole('banner').getByRole('button',{name:'Import',exact:true}).click();
+ await page.getByLabel('Local media',{exact:true}).setInputFiles(fixture);
+ await page.getByRole('heading',{name:'Library',exact:true}).waitFor();await page.locator('.media-card').filter({hasText:'Generated trim sample.mp4'}).getByRole('button',{name:'Edit source',exact:true}).click();
+ await page.getByRole('heading',{name:'Editor · Generated trim sample.mp4'}).waitFor();
+ await page.waitForFunction(()=>document.querySelector<HTMLVideoElement>('video[aria-label="Source playback"]')?.readyState!>=2);
+ assert.equal(await page.getByLabel('Cutting mode',{exact:true}).inputValue(),'auto');
+ await page.getByLabel('Region 1 in timecode',{exact:true}).fill('2.4');await page.getByLabel('Region 1 in timecode',{exact:true}).press('Enter');
+ await page.getByLabel('Region 1 out timecode',{exact:true}).fill('6.7');await page.getByLabel('Region 1 out timecode',{exact:true}).press('Enter');
+ const started=performance.now();await page.getByRole('button',{name:'Render edited preview',exact:true}).click();
+ const preview=page.getByLabel('Rendered export preview',{exact:true});await preview.waitFor();
+ const previewMs=performance.now()-started;
+ await preview.evaluate(async(v:HTMLVideoElement)=>{await v.play();});
+ await page.waitForFunction(()=>{const v=document.querySelector<HTMLVideoElement>('video[aria-label="Rendered export preview"]');return v&&v.readyState>=2&&v.currentTime>0;});
+ const job=await page.evaluate(async()=>{const jobs=await(await fetch('/api/v1/jobs')).json();return jobs.find((j:any)=>j.request.type==='export');});
+ assert.equal(job.state,'completed',job.error);assert.equal(job.plan.strategy,'copy');assert.deepEqual(job.plan.segments,[{in:2,out:7}]);
+ assert.match(job.plan.validation,/bounded cut-edge/);
+ const bytes=await page.evaluate(async url=>{const response=await fetch(url!);if(!response.ok)throw new Error(`Output fetch failed: ${response.status}`);return Array.from(new Uint8Array(await response.arrayBuffer()));},await preview.getAttribute('src'));
+ const output=join(work,'trimmed.mp4');await writeFile(output,Buffer.from(bytes));
+ const media=await validateMedia(output,tools);assert(Math.abs(media.duration-5)<.1);assert(media.streams.some(s=>s.type==='audio'));
+ await preview.evaluate((v:HTMLVideoElement)=>v.pause());
+ await page.screenshot({path:join(root,'fast-trim-desktop.png'),fullPage:true});
+ assert.equal(createHash('sha256').update(await readFile(fixture)).digest('hex'),originalHash);assert.deepEqual(errors,[]);
+ await writeFile(join(root,'evidence.json'),JSON.stringify({previewMs,media,plan:job.plan,originalHash,work},null,2));
+ console.log(`Packaged desktop passed: lossless 2–7 s cut, playable audio/video, immutable source, preview ready in ${Math.round(previewMs)} ms.`);
+}finally{await desktop.close();}

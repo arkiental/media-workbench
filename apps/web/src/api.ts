@@ -12,6 +12,7 @@ export async function request<T>(path:string, init:RequestInit = {}):Promise<T> 
 export const api = {
   session:(token:string)=>request('/session',{method:'POST',body:JSON.stringify({token})}),
   capabilities:()=>request<Capabilities>('/capabilities'), sources:()=>request<Source[]>('/sources'), artifacts:()=>request<Artifact[]>('/artifacts'), jobs:()=>request<Job[]>('/jobs'),
+  editArtifact:(artifactId:string)=>request<Source>('/sources/from-artifact',{method:'POST',body:JSON.stringify({artifactId})}),
   upload:(file:File)=>request<Source>('/uploads',{method:'POST',headers:{'content-type':'application/octet-stream','x-filename':encodeURIComponent(file.name)},body:file}),
   inspect:(download:DownloadRequest)=>request<any>('/sources/inspect',{method:'POST',body:JSON.stringify(download)}),
   submit:(job:JobRequest)=>request<Job>('/jobs',{method:'POST',headers:{'idempotency-key':crypto.randomUUID()},body:JSON.stringify(job)}),

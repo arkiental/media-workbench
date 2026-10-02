@@ -15,12 +15,12 @@ test('real Electron shell owns a standalone service and uses narrow artifact IPC
   const desktop=await electron.launch({args:[...(process.env.MW_DESKTOP_EXECUTABLE?[]:['apps/desktop/main.cjs']),`--user-data-dir=${path.join(directory,'profile')}`],...(process.env.MW_DESKTOP_EXECUTABLE?{executablePath:process.env.MW_DESKTOP_EXECUTABLE}:{}),env:environment,timeout:70000});
   let serviceOrigin='';
   try {
-    const page=await desktop.firstWindow();await page.getByRole('heading',{name:'Import media'}).waitFor({timeout:60000});serviceOrigin=new URL(page.url()).origin;
+    const page=await desktop.firstWindow();await page.getByRole('banner').getByRole('button',{name:'Import',exact:true}).click();await page.getByRole('heading',{name:'Import',exact:true}).waitFor({timeout:60000});serviceOrigin=new URL(page.url()).origin;
     const preferences=await desktop.evaluate(({BrowserWindow})=>(BrowserWindow.getAllWindows()[0].webContents as any).getLastWebPreferences());
     assert.equal(preferences.sandbox,true);assert.equal(preferences.contextIsolation,true);assert.equal(preferences.nodeIntegration,false);
     assert.equal(await page.evaluate(()=>typeof (window as any).require),'undefined');
     const native=await page.evaluate(async()=>window.mediaWorkbench!.capabilities());assert.equal(native.fileClipboard.state,process.platform==='win32'?'available':'unavailable');
-    await page.getByLabel('Local media',{exact:true}).setInputFiles(path.resolve('test-output/fixtures/numbered-cfr.mp4'));
+    await page.getByLabel('Local media',{exact:true}).setInputFiles(path.resolve('test-output/fixtures/numbered-cfr.mp4'));await page.getByRole('heading',{name:'Library',exact:true}).waitFor();await page.locator('.media-card').filter({hasText:'numbered-cfr.mp4'}).getByRole('button',{name:'Edit source',exact:true}).click();
     await page.getByRole('heading',{name:'Editor · numbered-cfr.mp4'}).waitFor({timeout:30000});
     await page.waitForFunction(()=>{const images=Array.from(document.querySelectorAll<HTMLImageElement>('img[alt^="Source thumbnail"]'));return images.length===4&&images.every(image=>image.complete&&image.naturalWidth>0);});
     await page.getByRole('heading',{name:'Keep regions',exact:true}).waitFor();await page.getByLabel('Playhead (s)',{exact:true}).fill('0.5');await page.getByRole('button',{name:'Set start I',exact:true}).click();await page.waitForFunction(()=>document.querySelector<HTMLInputElement>('.region-edit input')?.value==='0.5');

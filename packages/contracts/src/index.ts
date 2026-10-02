@@ -10,6 +10,15 @@ export const TextStyleSchema = z.object({
   align: z.enum(['left','center','right']).default('center'),
   x: finite.min(0).max(1).default(.5), y: finite.min(0).max(1).default(.5)
 }).strict();
+// An image composited over the picture. Times are source seconds, like cues; geometry is a fraction of
+// the output picture (excluding the caption header): x/y place the image centre, width sets its size.
+export const OverlaySchema = z.object({
+  imageId: Id, name: z.string().max(200).default('Image'), in: finite.min(0), out: finite.positive(),
+  x: finite.min(-1).max(2).default(.5), y: finite.min(-1).max(2).default(.5), width: finite.min(.01).max(4).default(.4),
+  opacity: finite.min(0).max(1).default(1)
+}).strict().refine(o => o.out > o.in, 'Overlay end must be after its start');
+export type Overlay = z.infer<typeof OverlaySchema>;
+export type OverlayImage = { id:string; ownerId:string; name:string; width:number; height:number; bytes:number; createdAt:string };
 export const CueSchema = z.object({ in: finite.min(0), out: finite.positive(), text: z.string().max(4000), style: TextStyleSchema.optional() }).strict().refine(c => c.out > c.in);
 export const RecipeSchema = z.object({
   schemaVersion: z.literal(1).default(1), sourceId: Id,
@@ -17,13 +26,16 @@ export const RecipeSchema = z.object({
   crop: z.object({ x: z.number().int().min(0), y: z.number().int().min(0), width: z.number().int().positive(), height: z.number().int().positive() }).strict().optional(),
   resize: z.object({ width: z.number().int().min(2).max(7680), height: z.number().int().min(2).max(7680) }).strict().optional(),
   rotate: z.union([z.literal(0), z.literal(90), z.literal(180), z.literal(270)]).default(0),
+  caption: z.object({text:z.string().max(1000),size:finite.int().min(8).max(200),padding:finite.int().min(0).max(200)}).strict().optional(),
   text: z.array(CueSchema).max(100).default([]), captions: z.array(CueSchema).max(5000).default([]),
   subtitleMode: z.enum(['burn', 'soft']).default('burn'),
+  overlays: z.array(OverlaySchema).max(20).default([]),
   audio: z.object({ mode: z.enum(['keep','mute','replace','mix']).default('keep'), track: z.number().int().min(0).max(32).default(0), volume: finite.min(0).max(10).default(1), fadeIn: finite.min(0).max(60).default(0), fadeOut: finite.min(0).max(60).default(0), normalize: z.boolean().default(false), sourceId: Id.optional() }).strict().default({mode:'keep',track:0,volume:1,fadeIn:0,fadeOut:0,normalize:false})
 }).strict();
 export type Recipe = z.infer<typeof RecipeSchema>;
 export const ExportSchema = z.object({
   cut: z.enum(['auto','copy','exact']).default('auto'), mode: z.enum(['auto','quality','bitrate','size']).default('quality'),
+  copyValidation: z.enum(['fast','full']).optional(),
   codec: z.enum(['h264','hevc','av1']).default('h264'), container: z.enum(['mp4','mkv']).default('mp4'),
   encoder: z.enum(['software','hardware','auto']).default('software'), allowSoftwareFallback: z.boolean().default(true),
   quality: z.number().int().min(0).max(51).default(23), bitrate: z.number().int().min(10000).max(200000000).default(2000000), frameRate:z.number().finite().min(1).max(240).optional(),
