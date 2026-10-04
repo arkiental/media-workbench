@@ -4,6 +4,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 const sha256=bytes=>createHash('sha256').update(bytes).digest('hex');
 const sourceServerSha256=sha256(await readFile('dist/server/main.js'));
+await mkdir('test-output',{recursive:true});
 const staging=await mkdtemp(path.resolve('test-output/package-'));
 for(const item of ['apps/desktop','dist','packages/contracts','LICENSE','THIRD_PARTY_NOTICES.md','README.md','.tools','docs','SECURITY.md','CONTRIBUTING.md','toolchain.lock.json','deploy/LINUX_PACKAGE_README.md'])await cp(item,path.join(staging,item),{recursive:true});
 const pkg=JSON.parse(await readFile('package.json','utf8'));

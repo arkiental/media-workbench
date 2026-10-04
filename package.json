@@ -1,6 +1,6 @@
 {
   "name": "media-workbench",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "type": "module",
   "engines": {
@@ -20,7 +20,8 @@
     "tools:verify": "node scripts/verify-tools.mjs",
     "tools:update": "node scripts/update-ytdlp.mjs",
     "tools:rollback": "node scripts/update-ytdlp.mjs --rollback",
-    "package:desktop": "npm run build && node scripts/package-desktop.mjs"
+    "package:desktop": "npm run build && node scripts/package-desktop.mjs",
+    "package:installer": "npm run package:desktop && node scripts/make-installer.mjs"
   },
   "dependencies": {
     "@fastify/cookie": "11.1.2",
@@ -37,6 +38,7 @@
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "electron": "44.3.0",
+    "electron-builder": "^26.15.3",
     "esbuild": "0.25.12",
     "playwright": "1.63.0",
     "tsx": "4.23.13",
