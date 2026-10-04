@@ -49,10 +49,19 @@ jobs:
         with:
           ref: ${{ env.TAG }}
       - run: docker build --target linux-artifact --output type=local,dest=release .
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.2'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Wrap the bundle in an AppImage
+        run: |
+          tar -xzf release/media-workbench-linux-x64-debian13.tar.gz -C release
+          node scripts/make-appimage.mjs
       - uses: actions/upload-artifact@v4
         with:
-          name: linux-package
-          path: release/media-workbench-linux-x64-debian13.tar.gz
+          name: linux-appimage
+          path: release/appimage/*.AppImage
           if-no-files-found: error
   publish:
     needs: [windows-installer, linux-package]
