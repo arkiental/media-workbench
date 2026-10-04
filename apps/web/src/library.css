@@ -92,3 +92,5 @@
 @media(max-width:600px){.unified-library .media-list .activity-card>.activity-details{margin-left:0}}
 
 .activity-card .media-name>.activity-details{margin:4px 0 0;padding:0;border:0}
+
+.drop-overlay{position:fixed;inset:0;z-index:1000;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;background:rgba(0,0,0,.6);border:3px dashed currentColor;color:#fff;pointer-events:none;font-size:1.25rem}

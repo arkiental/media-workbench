@@ -54,7 +54,9 @@ export async function createServer(options:ServerOptions){
  if(options.ownerToken){if(!store.auth(options.ownerToken))store.token(owner.id,'Local owner',['read','submit','manage'],options.ownerToken);}
  else if(!store.tokens(owner.id).length){const token=store.token(owner.id,'Local owner');await writeFile(path.join(store.dataDir,'owner-token'),token.token,{mode:0o600});}
  const startupCtx=worker?await worker.context({signal:new AbortController().signal,workDir:path.join(store.dataDir,'cache'),maxRuntimeSeconds:120,maxBytes:200000000}):undefined;
- const versions=await toolVersions(tools,startupCtx);const encoders=options.encoders??await testEncoders(tools,path.join(store.dataDir,'cache'),startupCtx);
+ const versions=await toolVersions(tools,startupCtx);const encoders:EncoderCapability[]=options.encoders??[];
+ // Encoder smoke tests spawn many FFmpeg encodes; run them after the server is listening instead of blocking startup.
+ if(!options.encoders)void testEncoders(tools,path.join(store.dataDir,'cache'),startupCtx).then(found=>{encoders.splice(0,encoders.length,...found);}).catch(()=>{});
  const queue=new Queue(store,tools,encoders,options.testOrigin,worker,versions);if(options.startQueue===false)await queue.stop();
  const app=Fastify({logger:false,bodyLimit:3*1024*1024,requestTimeout:desktopLocal?0:120000,connectionTimeout:30000,forceCloseConnections:true});
  const routes:{method:string;url:string}[]=[];app.addHook('onRoute',route=>{for(const method of Array.isArray(route.method)?route.method:[route.method])if(route.url.startsWith('/api/v1/'))routes.push({method,url:route.url});});
