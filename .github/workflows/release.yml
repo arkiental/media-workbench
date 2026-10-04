@@ -1,0 +1,76 @@
+name: Release builds
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build and attach to its release (e.g. v0.2.2)
+        required: true
+permissions:
+  contents: read
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+jobs:
+  windows-installer:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.2'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: node node_modules/electron/install.js
+      - name: Install pinned FFmpeg (see toolchain.lock.json)
+        shell: pwsh
+        run: |
+          $url = 'https://github.com/GyanD/codexffmpeg/releases/download/8.0.1/ffmpeg-8.0.1-full_build.7z'
+          Invoke-WebRequest $url -OutFile ffmpeg.7z
+          if ((Get-FileHash ffmpeg.7z -Algorithm SHA256).Hash -ne '42edab4b9241ff1184b26d5f4545322227589713a7e56cf4459c4c4e30ccaaac') { throw 'FFmpeg archive hash mismatch' }
+          7z x ffmpeg.7z -offmpeg | Out-Null
+          $bin = (Get-ChildItem ffmpeg -Recurse -Filter ffmpeg.exe | Select-Object -First 1).DirectoryName
+          "$bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+      - run: npm run tools:setup
+      - run: npm run package:installer
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: release/installer/*.exe
+          if-no-files-found: error
+  linux-package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - run: docker build --target linux-artifact --output type=local,dest=release .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-package
+          path: release/media-workbench-linux-x64-debian13.tar.gz
+          if-no-files-found: error
+  publish:
+    needs: [windows-installer, linux-package]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Attach to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" assets/* --clobber
+          else
+            gh release create "$TAG" assets/* --title "Media Workbench ${TAG#v}" --generate-notes
+          fi
