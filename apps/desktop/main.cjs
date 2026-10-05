@@ -2,6 +2,7 @@
 const { app,BrowserWindow,ipcMain,dialog,shell,clipboard,nativeImage,Menu }=require('electron');
 const { spawn }=require('node:child_process');
 const fs=require('node:fs/promises');
+const fsSync=require('node:fs');
 const path=require('node:path');
 const crypto=require('node:crypto');
 const native=require('./native.cjs');
@@ -23,8 +24,10 @@ async function startService() {
   token=crypto.randomBytes(32).toString('hex');desktopSecret=crypto.randomBytes(32).toString('hex');
   const bundledFont=path.join(root,'.tools','fonts','DejaVuSans.ttf');const fontEnv=process.platform==='linux'&&await fs.access(bundledFont).then(()=>true,()=>false)?{MW_FONT:bundledFont}:{};
   service=spawn(nodePath,[path.join(root,'dist/server/main.js')],{cwd:root,shell:false,windowsHide:true,stdio:['pipe','pipe','pipe'],env:{...process.env,...fontEnv,MW_PORT:'0',MW_HOST:'127.0.0.1',MW_SHARED:'0',MW_OWNER_TOKEN:token,MW_DESKTOP_SECRET:desktopSecret,MW_DATA_DIR:process.env.MW_DATA_DIR||path.join(app.getPath('userData'),'media-service')}});
-  let tail='';service.stderr.on('data',data=>{tail=(tail+data.toString()).slice(-2000);});
-  const port=await new Promise((resolve,reject)=>{let lines='';const timer=setTimeout(()=>reject(new Error('Local service did not become ready within 60 seconds.')),readyTimeout);service.on('error',error=>{clearTimeout(timer);reject(error);});service.on('exit',code=>{clearTimeout(timer);reject(new Error(`Local service exited (${code}). ${tail}`));});service.stdout.on('data',data=>{lines+=data.toString();const records=lines.split('\n');lines=records.pop()||'';for(const line of records){try{const event=JSON.parse(line);if(Number.isInteger(event.port)&&event.port>0){clearTimeout(timer);resolve(event.port);}}catch{}}});});
+  let tail='';const log=fsSync.createWriteStream(path.join(app.getPath('userData'),'service.log'),{flags:'w'});log.on('error',()=>{});log.write(`${new Date().toISOString()} starting ${nodePath}
+`);service.stdout.pipe(log,{end:false});service.stderr.on('data',data=>{tail=(tail+data.toString()).slice(-2000);log.write(data);});
+  const port=await new Promise((resolve,reject)=>{let lines='';const timer=setTimeout(()=>reject(new Error(`Local service did not become ready within 60 seconds. ${tail}
+Log: ${path.join(app.getPath('userData'),'service.log')}`)),readyTimeout);service.on('error',error=>{clearTimeout(timer);reject(error);});service.on('exit',code=>{clearTimeout(timer);reject(new Error(`Local service exited (${code}). ${tail}`));});service.stdout.on('data',data=>{lines+=data.toString();const records=lines.split('\n');lines=records.pop()||'';for(const line of records){try{const event=JSON.parse(line);if(Number.isInteger(event.port)&&event.port>0){clearTimeout(timer);resolve(event.port);}}catch{}}});});
   origin=`http://127.0.0.1:${port}`;
   service.on('exit',()=>{if(!quitting){dialog.showErrorBox('Media service stopped','The local service exited. Reopen the application to recover durable jobs.');app.quit();}});
 }

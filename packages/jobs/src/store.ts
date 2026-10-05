@@ -17,7 +17,9 @@ export class Store {
   this.dataDir=realpathSync(dataDir);
   if(process.platform==='win32')execFileSync(path.join(process.env.SystemRoot||'C:\\Windows','System32','icacls.exe'),[this.dataDir,'/inheritance:r','/grant:r',`${process.env.USERDOMAIN}\\${process.env.USERNAME}:(OI)(CI)(F)`],{windowsHide:true,stdio:'pipe'});
   this.lockFile=path.join(this.dataDir,'service.lock');
-  if(existsSync(this.lockFile)){if(lstatSync(this.lockFile).isSymbolicLink())throw Error('Unsafe service lock');const pid=Number(readFileSync(this.lockFile,'utf8'));let live=true;try{process.kill(pid,0);}catch(error){live=(error as NodeJS.ErrnoException).code!=='ESRCH';}if(live)throw Error('Another service owns this data directory; reuse its port or choose a separate MW_DATA_DIR');unlinkSync(this.lockFile);}
+  if(existsSync(this.lockFile)){if(lstatSync(this.lockFile).isSymbolicLink())throw Error('Unsafe service lock');const pid=Number(readFileSync(this.lockFile,'utf8'));let live=true;try{process.kill(pid,0);}catch(error){live=(error as NodeJS.ErrnoException).code!=='ESRCH';}// A previous instance may still be shutting down (or its PID was reused); give it a moment to release the directory before giving up.
+   for(let waited=0;live&&waited<10000;waited+=250){Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,250);if(!existsSync(this.lockFile)){live=false;break;}try{process.kill(pid,0);}catch(error){live=(error as NodeJS.ErrnoException).code!=='ESRCH';}}
+   if(live)throw Error('Another service owns this data directory; reuse its port or choose a separate MW_DATA_DIR');if(existsSync(this.lockFile))unlinkSync(this.lockFile);}
   writeFileSync(this.lockFile,String(process.pid),{flag:'wx',mode:0o600});
   for(const d of ['artifacts','work','cache','credentials','handoffs']){const dir=path.join(this.dataDir,d);mkdirSync(dir,{recursive:true,mode:0o700});if(lstatSync(dir).isSymbolicLink()){unlinkSync(this.lockFile);throw Error('Managed directories may not be symlinks');}}
   this.db=new DatabaseSync(path.join(this.dataDir,'workbench.sqlite'));

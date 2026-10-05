@@ -54,7 +54,10 @@ export async function createServer(options:ServerOptions){
  if(options.ownerToken){if(!store.auth(options.ownerToken))store.token(owner.id,'Local owner',['read','submit','manage'],options.ownerToken);}
  else if(!store.tokens(owner.id).length){const token=store.token(owner.id,'Local owner');await writeFile(path.join(store.dataDir,'owner-token'),token.token,{mode:0o600});}
  const startupCtx=worker?await worker.context({signal:new AbortController().signal,workDir:path.join(store.dataDir,'cache'),maxRuntimeSeconds:120,maxBytes:200000000}):undefined;
- const versions=await toolVersions(tools,startupCtx);const encoders:EncoderCapability[]=options.encoders??[];
+ // Version probes spawn every bundled tool (yt-dlp alone unpacks itself); fill them in after startup instead of delaying readiness.
+ const versions:Record<string,string>={};
+ void Promise.race([toolVersions(tools,startupCtx),new Promise<Record<string,string>>(resolve=>setTimeout(()=>resolve({}),20000).unref())]).then(found=>{Object.assign(versions,found);}).catch(()=>{});
+ const encoders:EncoderCapability[]=options.encoders??[];
  // Encoder smoke tests spawn many FFmpeg encodes; run them after the server is listening instead of blocking startup.
  if(!options.encoders)void testEncoders(tools,path.join(store.dataDir,'cache'),startupCtx).then(found=>{encoders.splice(0,encoders.length,...found);}).catch(()=>{});
  const queue=new Queue(store,tools,encoders,options.testOrigin,worker,versions);if(options.startQueue===false)await queue.stop();

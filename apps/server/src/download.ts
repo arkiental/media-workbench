@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { readdir, readFile, rm, stat } from 'node:fs/promises';
 import type { DownloadRequest, ExecutionContext, Policy, ToolPaths } from '../../../packages/contracts/src/index.ts';
 import { runProcess } from '../../../packages/media/src/process.ts';
 import { createEgressProxy, validateDestination } from './network.ts';
@@ -54,7 +54,15 @@ export async function downloadMedia(request:DownloadRequest,tools:ToolPaths,ctx:
     ctx.onProgress?.(lastProgress,status==='finished'?'Download stream received; preparing the file':`Downloading: ${(received/1024**2).toFixed(1)} MB received${total?totalText==='NA'?' (estimated size)':'':''}`);
    }else if(line.startsWith('MW_POSTPROCESS:')){ctx.onStage?.('processing');ctx.onProgress?.(lastProgress,'Preparing the downloaded file');}
   };
-  const toolResult=await runProcess(tools.ytdlp,[...args(tools,proxy.url,ctx,String(itemIndex)),'--progress','--newline','--progress-delta','0.25','--progress-template','download:MW_DOWNLOAD:%(info.format_id)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.status)s','--progress-template','postprocess:MW_POSTPROCESS:%(progress.status)s','--max-filesize',String(ctx.policy.maxInputBytes),'--concurrent-fragments','8','--downloader','native','--hls-prefer-native','--merge-output-format','mkv','-f',format,'-o',path.join(ctx.workDir,'download.%(ext)s'),'--',request.url],ctx,{onOutputLine});
+  const download=(mergeFormat:string)=>runProcess(tools.ytdlp,[...args(tools,proxy.url,ctx,String(itemIndex)),'--progress','--newline','--progress-delta','0.25','--progress-template','download:MW_DOWNLOAD:%(info.format_id)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.status)s','--progress-template','postprocess:MW_POSTPROCESS:%(progress.status)s','--max-filesize',String(ctx.policy.maxInputBytes),'--concurrent-fragments','8','--downloader','native','--hls-prefer-native','--merge-output-format',mergeFormat,'-f',format,'-o',path.join(ctx.workDir,'download.%(ext)s'),'--',request.url],ctx,{onOutputLine});
+  // Some streams (e.g. YouTube HLS video with timestamp-less packets) cannot be copied into Matroska but mux fine into MP4.
+  // The downloaded parts stay in the work directory, so the retry only repeats the merge.
+  let toolResult;
+  try{toolResult=await download('mkv');}catch(error){
+   if(!/Postprocessing|Conversion failed/i.test(String(error))||ctx.signal.aborted)throw error;
+   for(const name of await readdir(ctx.workDir))if(/^download..*temp./.test(name))await rm(path.join(ctx.workDir,name),{force:true});
+   ctx.onProgress?.(lastProgress,'Retrying the merge in a compatible container');toolResult=await download('mp4');
+  }
   if(proxy.violation)throw Error(proxy.violation);
   const files=(await readdir(ctx.workDir)).filter(f=>/^download\.[a-zA-Z0-9]{1,8}$/.test(f));if(files.length!==1){
    const diagnostics=(toolResult.stderr+'\n'+toolResult.stdout.toString()).split(/\r?\n/).filter(line=>line.trim()&&!line.startsWith('MW_')).slice(-8).join('\n');
