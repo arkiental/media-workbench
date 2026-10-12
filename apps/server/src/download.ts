@@ -8,33 +8,44 @@ const INSPECTION_LIMIT=100;
 function args(tools:ToolPaths,proxy:string,ctx:DownloadContext,selection='1'){return ['--ignore-config','--no-plugin-dirs','--no-playlist','--playlist-items',selection,'--lazy-playlist','--no-check-formats','--no-progress','--no-remote-components','--proxy',proxy,'--socket-timeout','20','--retries','2','--fragment-retries','2','--restrict-filenames','--no-cache-dir','--js-runtimes',`node:${tools.node||process.execPath}`,...(tools.ffmpeg===path.basename(tools.ffmpeg)?[]:['--ffmpeg-location',path.resolve(tools.ffmpeg)]),...(ctx.cookieFile?['--cookies',ctx.cookieFile]:[]),...(ctx.browserCookie?['--cookies-from-browser',ctx.browserCookie.browser+(ctx.browserCookie.profile?':'+ctx.browserCookie.profile:'')]:[])];}
 async function metadata(request:DownloadRequest,tools:ToolPaths,ctx:DownloadContext,proxy:string,selection:string){
  const result=await runProcess(tools.ytdlp,[...args(tools,proxy,ctx,selection),'--dump-single-json','--skip-download','--',request.url],ctx,{maxStdoutBytes:8*1024*1024});
- return JSON.parse(result.stdout.toString());
+ if(ctx.signal.aborted)throw Error('Operation cancelled');
+ let data:unknown;
+ try{data=JSON.parse(result.stdout.toString());}catch{throw Error('The downloader returned incomplete media details. Inspect the link again.');}
+ if(!data||typeof data!=='object'||Array.isArray(data))throw Error('The downloader returned invalid media metadata. Inspect the link again.');
+ if('entries' in data&&!Array.isArray(data.entries))throw Error('The downloader returned invalid media metadata. Inspect the link again.');
+ return data as Record<string,any>;
 }
 const THUMBNAIL_LIMIT=1500000,thumbnailTypes:Record<string,string>={'.jpg':'image/jpeg','.jpeg':'image/jpeg','.png':'image/png','.webp':'image/webp'};
 // Best effort: fetched by yt-dlp through the same egress proxy, then inlined so the page's img-src policy stays local-only.
 async function fetchThumbnail(request:DownloadRequest,tools:ToolPaths,ctx:DownloadContext,proxy:string){
  try{
-  await runProcess(tools.ytdlp,[...args(tools,proxy,ctx),'--skip-download','--write-thumbnail','-o',path.join(ctx.workDir,'thumb.%(ext)s'),'--',request.url],ctx,{maxStdoutBytes:1024*1024});
+  const thumbnailCtx={...ctx,signal:AbortSignal.any([ctx.signal,AbortSignal.timeout(8000)]),maxRuntimeSeconds:Math.min(ctx.maxRuntimeSeconds??8,8)};
+  await runProcess(tools.ytdlp,[...args(tools,proxy,ctx),'--skip-download','--write-thumbnail','-o',path.join(ctx.workDir,'thumb.%(ext)s'),'--',request.url],thumbnailCtx,{maxStdoutBytes:1024*1024});
   const file=(await readdir(ctx.workDir)).find(name=>name.startsWith('thumb.')&&thumbnailTypes[path.extname(name).toLowerCase()]);
   if(!file)return undefined;const full=path.join(ctx.workDir,file);if((await stat(full)).size>THUMBNAIL_LIMIT)return undefined;
   return `data:${thumbnailTypes[path.extname(file).toLowerCase()]};base64,${(await readFile(full)).toString('base64')}`;
- }catch{return undefined;}
+ }catch{if(ctx.signal.aborted)throw Error('Operation cancelled');return undefined;}
 }
 export async function inspectDownload(request:DownloadRequest,tools:ToolPaths,ctx:DownloadContext){
- await validateDestination(request.url,ctx.policy.allowedSites,ctx.testOrigin);
+ await validateDestination(request.url,ctx.policy.allowedSites,ctx.testOrigin,ctx.signal);
  const proxy=await createEgressProxy(Math.min(ctx.policy.maxInputBytes,ctx.policy.maxTransferBytes,10000000),ctx.signal,ctx.testOrigin,ctx.policy.bandwidthBytesPerSecond);
  try{
-  const data=await metadata(request,tools,ctx,proxy.url,`1:${INSPECTION_LIMIT}`);const entries=(Array.isArray(data.entries)?data.entries:[data]).filter(Boolean);
+  const data=await metadata(request,tools,ctx,proxy.url,`1:${INSPECTION_LIMIT}`);const entries=(Array.isArray(data.entries)?data.entries:[data]).filter((entry:unknown)=>entry&&typeof entry==='object'&&!Array.isArray(entry));
+  if(!entries.length)throw Error('No downloadable media was found. Check that the link points to a supported video or audio file.');
   const thumbnail=await fetchThumbnail(request,tools,ctx,proxy.url);
+  if(ctx.signal.aborted)throw Error('Operation cancelled');
+  if(proxy.violation)throw Error(proxy.violation);
   const text=(value:unknown,max:number)=>typeof value==='string'&&value?value.slice(0,max):undefined;
-  return {title:String(data.title||'Media').slice(0,300),duration:data.duration??null,uploader:text(data.uploader||data.channel,200),viewCount:Number.isFinite(data.view_count)?data.view_count:undefined,uploadDate:/^\d{8}$/.test(String(data.upload_date))?String(data.upload_date):undefined,description:text(data.description,400),site:text(data.extractor_key||data.extractor,60),thumbnail,authentication:'unknown',playlistLimited:true,collection:Array.isArray(data.entries),inspectionLimit:INSPECTION_LIMIT,limitReached:entries.length>=INSPECTION_LIMIT,entries:entries.slice(0,INSPECTION_LIMIT).map((e:any,i:number)=>({
-   itemIndex:Number.isInteger(e.playlist_index)&&e.playlist_index>=1&&e.playlist_index<=INSPECTION_LIMIT?e.playlist_index:i+1,id:String(e.id||''),title:String(e.title||'').slice(0,300),duration:e.duration??null,
-   formats:(e.formats||[]).slice(0,300).map((f:any)=>({id:String(f.format_id),ext:f.ext,width:f.width,height:f.height,vcodec:f.vcodec,acodec:f.acodec,tbr:f.tbr,fps:f.fps,bytes:f.filesize||f.filesize_approx||null}))
+  const number=(value:unknown)=>typeof value==='number'&&Number.isFinite(value)&&value>=0?value:undefined;
+  const identifier=(value:unknown)=>text(value,200)||(typeof value==='number'&&Number.isFinite(value)?String(value):'');
+  return {title:text(data.title,300)||'Media',duration:number(data.duration)??null,uploader:text(data.uploader||data.channel,200),viewCount:number(data.view_count),uploadDate:/^\d{8}$/.test(String(data.upload_date))?String(data.upload_date):undefined,description:text(data.description,400),site:text(data.extractor_key||data.extractor,60),thumbnail,authentication:'unknown',playlistLimited:true,collection:Array.isArray(data.entries),inspectionLimit:INSPECTION_LIMIT,limitReached:entries.length>=INSPECTION_LIMIT,entries:entries.slice(0,INSPECTION_LIMIT).map((e:any,i:number)=>({
+   itemIndex:Number.isInteger(e.playlist_index)&&e.playlist_index>=1&&e.playlist_index<=INSPECTION_LIMIT?e.playlist_index:i+1,id:identifier(e.id),title:text(e.title,300)||'Media',duration:number(e.duration)??null,
+   formats:(Array.isArray(e.formats)?e.formats:[]).filter((f:unknown)=>f&&typeof f==='object'&&!Array.isArray(f)).slice(0,300).map((f:any)=>({id:identifier(f.format_id??f.id),ext:text(f.ext,30),width:number(f.width),height:number(f.height),vcodec:text(f.vcodec,100),acodec:text(f.acodec,100),tbr:number(f.tbr),fps:number(f.fps),bytes:number(f.filesize)||number(f.filesize_approx)||null})).filter((f:{id:string})=>f.id)
   }))};
- }catch(e){throw Error(redactError(e));}finally{proxy.close();}
+ }catch(e){throw Error(redactError(ctx.signal.aborted?'Operation cancelled':proxy.violation||e));}finally{proxy.close();}
 }
 export async function downloadMedia(request:DownloadRequest,tools:ToolPaths,ctx:DownloadContext){
- await validateDestination(request.url,ctx.policy.allowedSites,ctx.testOrigin);
+ await validateDestination(request.url,ctx.policy.allowedSites,ctx.testOrigin,ctx.signal);
  const proxy=await createEgressProxy(Math.min(ctx.policy.maxInputBytes+2000000,ctx.policy.maxTransferBytes),ctx.signal,ctx.testOrigin,ctx.policy.bandwidthBytesPerSecond);
  const format=request.format||(request.preference==='audio'?'bestaudio/best':request.preference==='compatible'?'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best':'bestvideo+bestaudio/best');
  try{
@@ -59,17 +70,18 @@ export async function downloadMedia(request:DownloadRequest,tools:ToolPaths,ctx:
   // The downloaded parts stay in the work directory, so the retry only repeats the merge.
   let toolResult;
   try{toolResult=await download('mkv');}catch(error){
-   if(!/Postprocessing|Conversion failed/i.test(String(error))||ctx.signal.aborted)throw error;
+   if(!/Postprocessing|Conversion failed/i.test(String(error))||ctx.signal.aborted||proxy.violation)throw error;
    for(const name of await readdir(ctx.workDir))if(/^download..*temp./.test(name))await rm(path.join(ctx.workDir,name),{force:true});
    ctx.onProgress?.(lastProgress,'Retrying the merge in a compatible container');toolResult=await download('mp4');
   }
+  if(ctx.signal.aborted)throw Error('Operation cancelled');
   if(proxy.violation)throw Error(proxy.violation);
   const files=(await readdir(ctx.workDir)).filter(f=>/^download\.[a-zA-Z0-9]{1,8}$/.test(f));if(files.length!==1){
    const diagnostics=(toolResult.stderr+'\n'+toolResult.stdout.toString()).split(/\r?\n/).filter(line=>line.trim()&&!line.startsWith('MW_')).slice(-8).join('\n');
    if(/larger than|bigger than|max.file.?size|size.*limit/i.test(diagnostics))throw Error('Download was skipped because the selected media exceeds the file size limit. Choose a smaller format.');
    throw Error('Downloader did not produce a single complete media file.'+(diagnostics?' '+redactError(diagnostics):' Inspect the selected format and try again.'));
   }
-  const result=path.join(ctx.workDir,files[0]);if((await stat(result)).size>ctx.policy.maxInputBytes)throw Error('Downloaded file exceeds policy');return {path:result,name:files[0]};
- }catch(e){throw Error(redactError(e));}finally{proxy.close();}
+  const result=path.join(ctx.workDir,files[0]),size=(await stat(result)).size;if(!size)throw Error('Downloaded file is empty. Inspect the link and try again.');if(size>ctx.policy.maxInputBytes)throw Error('Downloaded file exceeds policy');return {path:result,name:files[0]};
+ }catch(e){throw Error(redactError(ctx.signal.aborted?'Operation cancelled':proxy.violation||e));}finally{proxy.close();}
 }
 export function redactError(error:unknown){const message=String(error instanceof Error?error.message:error);const status=/^Native tool failed \((-?\d+|null)\):\s*/.exec(message)?.[0]||'';return status+message.slice(status.length).replace(/https?:\/\/[^\s"']+/gi,'[redacted URL]').replace(/(?:[A-Za-z]:\\|\/home\/|\/tmp\/)[^\r\n"']+/g,'[local path]').replace(/(cookie|authorization|token|password)[^\r\n]*/gi,'[credential detail redacted]').slice(-(1800-status.length));}

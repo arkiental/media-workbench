@@ -73,7 +73,10 @@ export async function testEncoders(tools:ToolPaths,workDir:string,ctx?:Execution
     const results:EncoderCapability[]=[];
     for(const [name,candidateCodec,hardware]of candidates){if(codec&&candidateCodec!==codec)continue;if(!hardware&&cachedSoftware.has(name)){results.push(cachedSoftware.get(name)!);continue;}const c:EncoderCapability={name,codec:candidateCodec,hardware,available:false,testedAt:new Date().toISOString()};if(!listing.includes(` ${name} `)){c.reason='Encoder absent from this FFmpeg build';results.push(c);continue;}
       const output=join(workDir,`encoder-${randomUUID()}.mkv`);const smokeCtx={...ctx,signal:ctx?.signal??new AbortController().signal,workDir,maxRuntimeSeconds:Math.min(30,ctx?.maxRuntimeSeconds??30)};try{const extras=name==='libaom-av1'?['-cpu-used','8']:name==='libsvtav1'?['-preset','12']:[];await runProcess(tools.ffmpeg,[...BASE,'-f','lavfi','-i','testsrc2=size=320x180:rate=24','-frames:v','12','-an','-c:v',name,...extras,'-threads','2','-pix_fmt','yuv420p',output],smokeCtx);await validateMedia(output,tools,smokeCtx);c.available=true;}catch(e){if(ctx?.signal.aborted)throw new Error('Operation cancelled');c.reason=String((e as Error).message).replaceAll(workDir,'[work]').replace(/ @ [a-f0-9]+/gi,'').slice(0,700);}finally{await unlink(output).catch(()=>{});}results.push(c);
-    }return results;})();const results=await pending;encoderCache.set(key,results.filter(capability=>!capability.hardware));return results;
+    }return results;})();const results=await pending;
+  const verifiedSoftware=new Map((encoderCache.get(key)??[]).map(capability=>[capability.name,capability]));
+  for(const capability of results)if(!capability.hardware&&capability.available)verifiedSoftware.set(capability.name,capability);
+  encoderCache.set(key,[...verifiedSoftware.values()]);return results;
 }
 
 type Frame={pts:number;keyframe:boolean};

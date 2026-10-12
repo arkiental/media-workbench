@@ -585,7 +585,7 @@ button:disabled svg.icon[class*=tone-] { color: inherit; }
 /* ---------- Editor + pages: mobile ---------- */
 @media (max-width: 850px) {
   .brand-glyph { width: 24px; height: 24px; }
-  .app-shell .app-header .shell-actions button.settings-button { width: 44px; min-width: 44px; }
+  .app-shell .app-header .shell-actions button.settings-button { width: 44px; min-width: 44px; flex: none; }
   .icon-button { width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
 
   .editing-shell .context-panel-heading { justify-content: flex-start; }
@@ -599,7 +599,7 @@ button:disabled svg.icon[class*=tone-] { color: inherit; }
   .editing-shell .cut-precision[open] { padding: 0; }
   .editing-shell .cut-precision > summary,
   .editing-shell .cut-precision[open] > summary { width: 44px; height: 44px; min-height: 44px; }
-  .cut-precision-menu { position: fixed; left: 12px; right: 12px; bottom: 96px; width: auto; max-height: 60dvh; }
+  .cut-precision-menu { position: fixed; left: 12px; right: 12px; bottom: calc(var(--mobile-navigation-height) + var(--mobile-editor-rail-height) + 8px); width: auto; max-height: min(60dvh, calc(100dvh - var(--mobile-navigation-height) - var(--mobile-editor-rail-height) - 24px)); }
   .cut-precision-menu button,
   .cut-precision-menu select { min-height: 44px; }
 }

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdir,mkdtemp,readFile,writeFile,stat,open} from 'node:fs/promises';
+import {mkdir,mkdtemp,readFile,writeFile,stat,open,realpath} from 'node:fs/promises';
 import {resolve,join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {createServer as httpServer} from 'node:http';
@@ -28,7 +28,7 @@ test('desktop imports use bounded checks; named downloads save in an authorized 
   await writeFile(join(folder,'My video.mp4'),'Keep this existing file');
   const response=await app.inject({method:'POST',url:'/api/v1/jobs',headers:{...headers,'idempotency-key':randomUUID()},payload:request});assert.equal(response.statusCode,202,response.body);
   let job=app.store.job(response.json().id)!;for(let i=0;i<200&&!['completed','failed'].includes(job.state);i++){await new Promise(r=>setTimeout(r,100));job=app.store.job(job.id)!;}
-  assert.equal(job.state,'completed',job.error);assert.equal(job.savingError,undefined);assert.equal(job.savedPath,join(folder,'My video (1).mp4'));assert.equal((await stat(job.savedPath!)).size,bytes.length);assert.equal(await readFile(join(folder,'My video.mp4'),'utf8'),'Keep this existing file');
+  assert.equal(job.state,'completed',job.error);assert.equal(job.savingError,undefined);assert.equal(job.savedPath,join(await realpath(folder),'My video (1).mp4'));assert.equal((await stat(job.savedPath!)).size,bytes.length);assert.equal(await readFile(join(folder,'My video.mp4'),'utf8'),'Keep this existing file');
  }finally{await app.close();await new Promise<void>(r=>server.close(()=>r()));}
 });
 

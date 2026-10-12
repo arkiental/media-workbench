@@ -23,6 +23,7 @@ export async function runProcess(binary:string, args:string[], ctx?:ExecutionCon
   if (ctx?.signal.aborted) throw new Error('Operation cancelled');
   if (ctx?.runTool) {
     const result=await ctx.runTool(binary,args,options);
+    if(ctx.signal.aborted)throw new Error('Operation cancelled');
     return {...result,stdout:Buffer.from(result.stdout)};
   }
   return new Promise((resolve,reject)=>{
@@ -54,7 +55,7 @@ export async function runProcess(binary:string, args:string[], ctx?:ExecutionCon
     });
     child.on('error',e=>{failed=e;});
     child.on('close',async code=>{outputLines('stdout');outputLines('stderr');finished=true;clearTimeout(timeout);if(monitor)clearInterval(monitor);ctx?.signal.removeEventListener('abort',aborted);await cleanup;
-      if(failed)return reject(failed);if(code!==0)return reject(new Error(`Native tool failed (${code}): ${stderr.slice(-6000)}`));resolve({stdout:Buffer.concat(chunks),stderr,exitCode:code});});
+      if(failed)return reject(failed);if(ctx?.signal.aborted)return reject(new Error('Operation cancelled'));if(code!==0)return reject(new Error(`Native tool failed (${code}): ${stderr.slice(-6000)}`));resolve({stdout:Buffer.concat(chunks),stderr,exitCode:code});});
     child.stdin.on('error',()=>{});child.stdin.end(options.stdin);
   });
 }

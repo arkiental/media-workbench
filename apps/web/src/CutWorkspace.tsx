@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { Recipe } from '../../../packages/contracts/src/index';
 import { api, contentUrl } from './api';
+import { loadSourceFrame } from './source-frame';
 import type { WorkspaceState } from './drafts';
 import {EditorIcon,type IconTone} from './EditorIcon';
 
@@ -44,6 +45,8 @@ type Props={
 
 export function CutWorkspace({viewerActions,exportSummary,tool,setTool,playbackOptions,sourceName,mediaWidth,mediaHeight,mediaRotation=0,frameRate,workspace,setWorkspace,inspector,pauseSignal,sourceId,previewId,duration,recipe,change,time,setTime,wave,waveLoading=false,hasAudio=true,thumbnails,canUndo,canRedo,undo,redo,run}:Props) {
   const {selected,zoom,snap}=workspace;
+  const sourceEnd=Math.max(0,duration-.001);
+  const canAddSection=(at:number)=>at<sourceEnd-1e-6;
   const wavePeak=Math.max(.001,...wave.map(Math.abs));
   const fit=workspace.viewerFit||'fit',setFit=(value:string)=>setWorkspace({...workspace,viewerFit:value as 'fit'|'fill'});
   const setSelected=(value:number)=>setWorkspace({...workspace,selected:value});
@@ -55,6 +58,23 @@ export function CutWorkspace({viewerActions,exportSummary,tool,setTool,playbackO
   const [muted,setMuted]=useState(false),[volume,setVolume]=useState(1),[skipRemoved,setSkipRemoved]=useState(true),[helpOpen,setHelpOpen]=useState(false);
   const [playing,setPlaying]=useState(false),[previewing,setPreviewing]=useState(false),[ready,setReady]=useState(false);
   const [inspectFrame,setInspectFrame]=useState<number>(),[error,setError]=useState(''),[message,setMessage]=useState('');
+  const [frameAttempt,setFrameAttempt]=useState(0),[frameImage,setFrameImage]=useState<{key:string;phase:'loading'|'ready'|'error';url?:string;message?:string}>();
+  const frameKey=inspectFrame===undefined?undefined:`${sourceId}:${previewId}:${inspectFrame}`;
+  const currentFrame=frameImage?.key===frameKey?frameImage:undefined;
+  useEffect(()=>{
+    if(inspectFrame===undefined){setFrameImage(undefined);return;}
+    const controller=new AbortController(),key=`${sourceId}:${previewId}:${inspectFrame}`;
+    let url:string|undefined;
+    setFrameImage({key,phase:'loading',message:'Loading source frame…'});
+    void loadSourceFrame(sourceId,inspectFrame,{signal:controller.signal,onRetry:()=>{
+      if(!controller.signal.aborted)setFrameImage({key,phase:'loading',message:'Preview is busy. Trying again…'});
+    }}).then(image=>{
+      if(controller.signal.aborted)return;
+      url=URL.createObjectURL(image);
+      setFrameImage({key,phase:'loading',url,message:'Loading source frame…'});
+    }).catch(error=>{if(!controller.signal.aborted)setFrameImage({key,phase:'error',message:error instanceof Error?error.message:'Could not load this source frame. Try again.'});});
+    return()=>{controller.abort();if(url)URL.revokeObjectURL(url);};
+  },[sourceId,previewId,inspectFrame,frameAttempt]);
   const [panelOpen,setPanelOpen]=useState(true),[trimDrag,setTrimDrag]=useState<{index:number;edge:'in'|'out';value:number}>();
   const [panelRevealRevision,setPanelRevealRevision]=useState(0);
   const [cropView,setCropView]=useState(true);
@@ -152,7 +172,7 @@ export function CutWorkspace({viewerActions,exportSummary,tool,setTool,playbackO
     // browser seeks directly; explicit keyframe/inspection actions still use the index.
     if(snap&&!exact){const [n,d]=(frameRate||'30/1').split('/').map(Number),fps=n/(d||1);if(Number.isFinite(fps)&&fps>0)target=Math.round(target*fps)/fps;}
     if(request!==generation.current)return;
-    target=Math.max(0,Math.min(Math.max(0,duration-.001),target));
+    target=Math.max(0,Math.min(sourceEnd,target));
     setElementTime(target);
     reportTime(target);setInspectFrame(exact?target:undefined);
   };
@@ -218,7 +238,7 @@ export function CutWorkspace({viewerActions,exportSummary,tool,setTool,playbackO
   const select=(index:number)=>{generation.current++;pause();setSelected(index);setElementTime(recipe.segments[index].in);reportTime(recipe.segments[index].in);setError('');setMessage('');};
   const add=()=>{
     const at=cursor();
-    if(at>=duration){setError('Move the playhead before the end of the source to add a region.');return;}
+    if(!canAddSection(at)){setError('Move the playhead before the end of the source to add a region.');return;}
     generation.current++;pause();reportTime(at);setSelected(recipe.segments.length);setError('');
     change({...recipe,segments:[...recipe.segments,{in:at,out:duration}]});
     setMessage('Section added.');
@@ -430,7 +450,7 @@ export function CutWorkspace({viewerActions,exportSummary,tool,setTool,playbackO
             </div>)}
           </div>
           <div className="section-length">{(displayedRegion.out-displayedRegion.in).toFixed(2)} s</div>
-          <div className="actions"><button aria-label="+ New region" disabled={time>=duration} onClick={add}><EditorIcon name="plus" size={16}/>Add section</button><button className="danger-quiet" aria-label="Remove region" disabled={recipe.segments.length===1} onClick={remove}>Remove section</button></div>
+          <div className="actions"><button aria-label="+ New region" disabled={!canAddSection(time)} onClick={add}><EditorIcon name="plus" size={16}/>Add section</button><button className="danger-quiet" aria-label="Remove region" disabled={recipe.segments.length===1} onClick={remove}>Remove section</button></div>
           <small>{totalKept.toFixed(3)} seconds kept</small>
         </aside>}
       </div>
@@ -448,10 +468,13 @@ export function CutWorkspace({viewerActions,exportSummary,tool,setTool,playbackO
             onSeeked={e=>{if(expectedSeek.current!==undefined&&Math.abs(e.currentTarget.currentTime-expectedSeek.current)>.05){e.currentTarget.currentTime=expectedSeek.current;return;}expectedSeek.current=undefined;pendingStep.current=undefined;applyGain(e.currentTarget.currentTime);reportTime(e.currentTarget.currentTime);}}
             onTimeUpdate={e=>{if(e.currentTarget.readyState>=1&&!e.currentTarget.seeking)reportTime(e.currentTarget.currentTime);}}
             onError={()=>{setReady(false);setPlaying(false);stopPreview();setError('This browser could not decode the preview. Generate and select a playback proxy below.');}}/>
-          {inspectFrame!==undefined&&<img className="cut-frame" src={`/api/v1/sources/${sourceId}/frame?pts=${inspectFrame}`} alt={`Source decoded frame at ${inspectFrame.toFixed(6)} seconds`}/>}
+          {inspectFrame!==undefined&&currentFrame?.url&&<img className="cut-frame" src={currentFrame.url} alt={`Source decoded frame at ${inspectFrame.toFixed(6)} seconds`} onLoad={()=>setFrameImage(frame=>frame&&frame.key===frameKey?{...frame,phase:'ready',message:undefined}:frame)} onError={()=>setFrameImage(frame=>frame&&frame.key===frameKey?{key:frame.key,phase:'error',message:'The source frame could not be displayed. Try again.'}:frame)}/>}
           </TransformViewport>
         </div>
-        {inspectFrame!==undefined&&<small>Decoded original frame · {inspectFrame.toFixed(6)} s</small>}
+        {inspectFrame!==undefined&&<div className="original-preview-note source-frame-status" role={currentFrame?.phase==='error'?'alert':'status'} aria-live="polite" aria-atomic="true">
+          {currentFrame?.phase==='ready'?`Decoded original frame · ${inspectFrame.toFixed(6)} s`:currentFrame?.message||'Loading source frame…'}
+          {currentFrame?.phase==='error'&&<div className="actions"><button type="button" onClick={()=>setFrameAttempt(attempt=>attempt+1)}>Retry frame</button></div>}
+        </div>}
         {(recipe.audio.mode==='mute'||recipe.audio.mode==='replace'||recipe.audio.normalize||(skipRemoved&&excluded.length>0))&&<small className="preview-notes">{[
           skipRemoved&&excluded.length>0?'Preview plays only the kept sections':'',
           recipe.audio.mode==='mute'?'audio removed':recipe.audio.mode==='replace'?'replacement audio is not played in preview':'',

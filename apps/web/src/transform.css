@@ -66,7 +66,14 @@
 .editing-shell .ti-round:hover:not(:disabled) { background:var(--raised); }
 .editing-shell .ti-round[aria-pressed=true] { background:var(--accent); color:var(--on-accent); border-color:var(--accent); }
 @media(max-width:850px) {
-  .editing-shell .ti-chips button { min-height:40px; }
+  .editing-shell .ti-switch,
+  .editing-shell .ti-switch:hover:not(:disabled),
+  .editing-shell .ti-switch[aria-checked=true] { width:44px; min-width:44px; height:44px; min-height:44px; border:0; background:transparent; }
+  .ti-switch::before { content:''; position:absolute; left:5px; top:13px; width:34px; height:18px; box-sizing:border-box; border:1px solid var(--control-line); pointer-events:none; }
+  .editing-shell .ti-switch:hover:not(:disabled)::before { background:var(--raised); }
+  .editing-shell .ti-switch[aria-checked=true]::before { background:var(--accent); border-color:var(--accent); }
+  .ti-switch i { left:8px; top:16px; }
+  .editing-shell .ti-chips button { min-height:44px; }
   .editing-shell .ti-grid input,.editing-shell .ti-size input { min-height:44px; font-size:16px; }
   .editing-shell .ti-round { width:44px; height:44px; }
 }

@@ -37,7 +37,7 @@
 .editing-shell .audio-reset { display:flex; align-items:center; justify-content:center; gap:7px; min-height:34px; margin:14px 16px 16px; font-size:12px; border:1px solid var(--control-line); border-radius:0; background:transparent; }
 @media(max-width:850px) {
   .editing-shell .audio-segment,.editing-shell .audio-reset,.editing-shell .audio-number input,.editing-shell .audio-field select { min-height:44px; }
-  .editing-shell .audio-quick button { min-height:40px; }
+  .editing-shell .audio-quick button { min-height:44px; }
 }
 /* Waveform reflects volume, fades and removal; clipped peaks show in red. */
 .audio-track .waveform line.clip { stroke:var(--danger); }

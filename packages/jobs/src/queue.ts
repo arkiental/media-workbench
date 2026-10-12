@@ -61,7 +61,7 @@ export class Queue {
    if(controller.signal.aborted)throw Error('Operation cancelled');this.store.updateJob(job.id,{state:'validating'});
    const media=verifiedMedia??await validateMedia(staged,this.tools,ctx);enforceMedia(media,{...user.policy,allowedInputCodecs:request.type==='download'?user.policy.allowedInputCodecs:user.policy.allowedOutputCodecs,maxInputBytes:request.type==='download'?user.policy.maxInputBytes:user.policy.maxOutputBytes});
    if(media.size>remaining)throw Error('Storage quota exceeded');if(controller.signal.aborted)throw Error('Operation cancelled');
-   artifact=await publish(this.store,staged,user.id,name,media,kind,job.id,sourceId,reservation);artifact.expiresAt=new Date(Date.now()+user.policy.retentionHours*3600000).toISOString();this.store.put('artifact',artifact.id,user.id,artifact);
+   artifact=await publish(this.store,staged,user.id,name,media,kind,job.id,sourceId,reservation,controller.signal);artifact.expiresAt=new Date(Date.now()+user.policy.retentionHours*3600000).toISOString();this.store.put('artifact',artifact.id,user.id,artifact);
    if(request.type==='download')sourceId=registerSource(this.store,artifact,request.download.url).id;
    let savedPath:string|undefined,savingError:string|undefined;if(request.type==='download'&&request.download.destinationId){try{savedPath=await saveDownloadCopy(this.store,artifact,request.download.destinationId);}catch(error){savingError=(error as Error).message;}}
    this.store.updateJob(job.id,{state:'completed',artifactId:artifact.id,sourceId,progress:1,savedPath,savingError,message:savingError?'Ready in Library, but saving to the selected folder failed: '+savingError:savedPath?'Saved to '+savedPath:'Output validated and published'});
