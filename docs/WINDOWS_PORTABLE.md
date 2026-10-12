@@ -28,3 +28,5 @@ Official tool downloads used by first launch:
 - [yt-dlp 2026.08.19](https://github.com/yt-dlp/yt-dlp/releases/tag/2026.08.19)
 
 The ZIP excludes those native executables; first launch downloads them directly for local use. An offline first launch is unsupported.
+
+If setup reports an incomplete lock after a terminated first launch, close the portable launch windows and confirm that its bundled Node setup process has stopped before removing only `resources\app\.tools\setup.lock`. Then run the launcher again. Never remove a lock while another setup is running. A fresh extraction to a new folder is another recovery path and leaves existing data untouched.

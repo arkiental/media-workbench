@@ -41,17 +41,16 @@ export async function prepareTools(root = appRoot) {
   catch (error) {
     if (error.code !== 'EEXIST') throw error;
     const recorded = await readFile(lockPath, 'utf8').catch(() => '');
-    const pid = Number(recorded);
+    const pidText = recorded.trim(), pid = Number(pidText);
+    if (!/^[1-9]\d*$/.test(pidText) || !Number.isSafeInteger(pid) || pid > 0xffffffff) throw Error('The first-time setup lock is incomplete or unreadable. Close all Media Workbench setup windows. In the extracted portable folder, remove resources\\app\\.tools\\setup.lock, then run Start Media Workbench.cmd again.');
     let stale = false;
-    if (Number.isSafeInteger(pid) && pid > 0) {
-      try { process.kill(pid, 0); } catch (probe) { stale = probe.code === 'ESRCH'; }
-    }
+    try { process.kill(pid, 0); } catch (probe) { stale = probe.code === 'ESRCH'; }
     if (!stale || await readFile(lockPath, 'utf8').catch(() => '') !== recorded) throw Error('Another first-time setup is running. Wait for it to finish before opening the launcher again.');
     await rm(lockPath, { force: true }); lock = await open(lockPath, 'wx');
   }
-  await lock.writeFile(String(process.pid));
   let scratch;
   try {
+    await lock.writeFile(String(process.pid));
     scratch = await mkdtemp(path.join(toolsRoot, 'setup-'));
     const archive = path.join(scratch, 'ffmpeg.7z');
     const progress = label => {
@@ -91,12 +90,13 @@ export async function prepareTools(root = appRoot) {
     await writeFile(path.join(toolsRoot, 'manifest.json.new'), JSON.stringify(manifest, null, 2)); await rename(path.join(toolsRoot, 'manifest.json.new'), path.join(toolsRoot, 'manifest.json'));
     return { event: 'portable-tools-ready', offline: false, versions: { node: nodeRecord.version, ffmpeg: nativeTools.ffmpeg.version, ytDlp: nativeTools.ytdlp.version } };
   } finally {
-    if (scratch) {
-      const checked = path.resolve(scratch);
-      if (path.dirname(checked) !== path.resolve(toolsRoot) || !path.basename(checked).startsWith('setup-')) throw Error('Unsafe setup cleanup path');
-      await rm(checked, { recursive: true, force: true });
-    }
-    await lock.close(); await rm(lockPath, { force: true });
+    try {
+      if (scratch) {
+        const checked = path.resolve(scratch);
+        if (path.dirname(checked) !== path.resolve(toolsRoot) || !path.basename(checked).startsWith('setup-')) throw Error('Unsafe setup cleanup path');
+        await rm(checked, { recursive: true, force: true });
+      }
+    } finally { await lock.close().finally(() => rm(lockPath, { force: true })); }
   }
 }
 

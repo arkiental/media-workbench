@@ -21,7 +21,8 @@
     "tools:update": "node scripts/update-ytdlp.mjs",
     "tools:rollback": "node scripts/update-ytdlp.mjs --rollback",
     "package:desktop": "npm run build && node scripts/package-desktop.mjs",
-    "package:installer": "npm run package:desktop && node scripts/make-installer.mjs"
+    "package:installer": "npm run package:desktop && node scripts/make-installer.mjs",
+    "package:portable": "npm run build && node scripts/package-portable.mjs"
   },
   "dependencies": {
     "@fastify/cookie": "11.1.2",
