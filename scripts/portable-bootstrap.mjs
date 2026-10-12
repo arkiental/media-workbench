@@ -42,7 +42,7 @@ export async function prepareTools(root = appRoot) {
     if (error.code !== 'EEXIST') throw error;
     const recorded = await readFile(lockPath, 'utf8').catch(() => '');
     const pidText = recorded.trim(), pid = Number(pidText);
-    if (!/^[1-9]\d*$/.test(pidText) || !Number.isSafeInteger(pid) || pid > 0xffffffff) throw Error('The first-time setup lock is incomplete or unreadable. Close all Media Workbench setup windows. In the extracted portable folder, remove resources\\app\\.tools\\setup.lock, then run Start Media Workbench.cmd again.');
+    if (!/^[1-9]\d*$/.test(pidText) || !Number.isSafeInteger(pid) || pid > 0xffffffff) throw Error('The first-time setup lock is incomplete or unreadable. Close all Media Workbench setup windows. In the extracted portable folder, remove resources/app/.tools/setup.lock, then run Start Media Workbench.cmd again.');
     let stale = false;
     try { process.kill(pid, 0); } catch (probe) { stale = probe.code === 'ESRCH'; }
     if (!stale || await readFile(lockPath, 'utf8').catch(() => '') !== recorded) throw Error('Another first-time setup is running. Wait for it to finish before opening the launcher again.');
