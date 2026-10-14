@@ -6,8 +6,11 @@ const fsSync=require('node:fs');
 const path=require('node:path');
 const crypto=require('node:crypto');
 const native=require('./native.cjs');
+const {waitForService,stopService,hasExited}=require('./startup.cjs');
 let mainWindow,service,origin,token,desktopSecret,quitting=false,shutdownComplete=false;
+let startupFinished=false,serviceFailure,serviceLog;
 const root=path.resolve(__dirname,'../..');
+if(process.env.MW_PORTABLE_USER_DATA){const portableUserData=path.resolve(process.env.MW_PORTABLE_USER_DATA);fsSync.mkdirSync(portableUserData,{recursive:true});app.setPath('userData',portableUserData);}
 const readyTimeout=60000;
 function trusted(event) {if(!mainWindow||event.sender!==mainWindow.webContents||event.senderFrame!==mainWindow.webContents.mainFrame||new URL(event.senderFrame.url).origin!==origin)throw new Error('Native IPC denied for this sender.');}
 function register(name,fn) {ipcMain.handle(name,async(event,...args)=>{trusted(event);return fn(...args);});}
@@ -23,16 +26,24 @@ async function startService() {
   await fs.access(path.join(root,'dist/server/main.js')).catch(()=>{throw new Error('Service build is missing. Run npm run build before launching the desktop.');});
   token=crypto.randomBytes(32).toString('hex');desktopSecret=crypto.randomBytes(32).toString('hex');
   const bundledFont=path.join(root,'.tools','fonts','DejaVuSans.ttf');const fontEnv=process.platform==='linux'&&await fs.access(bundledFont).then(()=>true,()=>false)?{MW_FONT:bundledFont}:{};
-  service=spawn(nodePath,[path.join(root,'dist/server/main.js')],{cwd:root,shell:false,windowsHide:true,stdio:['pipe','pipe','pipe'],env:{...process.env,...fontEnv,MW_PORT:'0',MW_HOST:'127.0.0.1',MW_SHARED:'0',MW_OWNER_TOKEN:token,MW_DESKTOP_SECRET:desktopSecret,MW_DATA_DIR:process.env.MW_DATA_DIR||path.join(app.getPath('userData'),'media-service')}});
-  let tail='';const log=fsSync.createWriteStream(path.join(app.getPath('userData'),'service.log'),{flags:'w'});log.on('error',()=>{});log.write(`${new Date().toISOString()} starting ${nodePath}
-`);service.stdout.pipe(log,{end:false});service.stderr.on('data',data=>{tail=(tail+data.toString()).slice(-2000);log.write(data);});
-  const port=await new Promise((resolve,reject)=>{let lines='';const timer=setTimeout(()=>reject(new Error(`Local service did not become ready within 60 seconds. ${tail}
-Log: ${path.join(app.getPath('userData'),'service.log')}`)),readyTimeout);service.on('error',error=>{clearTimeout(timer);reject(error);});service.on('exit',code=>{clearTimeout(timer);reject(new Error(`Local service exited (${code}). ${tail}`));});service.stdout.on('data',data=>{lines+=data.toString();const records=lines.split('\n');lines=records.pop()||'';for(const line of records){try{const event=JSON.parse(line);if(Number.isInteger(event.port)&&event.port>0){clearTimeout(timer);resolve(event.port);}}catch{}}});});
+  const userData=app.getPath('userData');await fs.mkdir(userData,{recursive:true});
+  const logPath=path.join(userData,'service.log');serviceLog=fsSync.createWriteStream(logPath,{flags:'w'});serviceLog.on('error',error=>console.error(`Cannot write the service log: ${error.message}`));serviceLog.write(`${new Date().toISOString()} starting ${nodePath}\n`);
+  service=spawn(nodePath,[path.join(root,'dist/server/main.js')],{cwd:root,shell:false,windowsHide:true,stdio:['pipe','pipe','pipe'],env:{...process.env,...fontEnv,MW_PORT:'0',MW_HOST:'127.0.0.1',MW_SHARED:'0',MW_OWNER_TOKEN:token,MW_DESKTOP_SECRET:desktopSecret,MW_DATA_DIR:process.env.MW_DATA_DIR||path.join(userData,'media-service')}});
+  let tail='';service.stdout.pipe(serviceLog,{end:false});service.stderr.on('data',data=>{tail=(tail+data.toString()).slice(-2000);serviceLog.write(data);});
+  const failed=reason=>{
+    serviceFailure=new Error(`${reason}${tail?`\n${tail.trim()}`:''}\nLog: ${logPath}`);
+    if(startupFinished&&!quitting){dialog.showErrorBox('Media service stopped',serviceFailure.message);app.quit();}
+  };
+  service.on('error',error=>failed(`The local service failed: ${error.message}`));
+  service.on('exit',(code,signal)=>{serviceLog.write(`\n${new Date().toISOString()} service exited (${signal||code})\n`);if(!quitting)failed(`The local service exited (${signal||code}). Reopen the application to recover durable jobs.`);});
+  service.once('close',()=>serviceLog.end());
+  const port=await waitForService(service,{timeoutMs:readyTimeout,logPath});
+  assertServiceRunning();
   origin=`http://127.0.0.1:${port}`;
-  service.on('exit',()=>{if(!quitting){dialog.showErrorBox('Media service stopped','The local service exited. Reopen the application to recover durable jobs.');app.quit();}});
 }
+function assertServiceRunning() {if(serviceFailure)throw serviceFailure;if(hasExited(service))throw new Error('The local service stopped during desktop startup.');}
 async function installSession() {
-  const response=await fetch(`${origin}/api/v1/session`,{method:'POST',headers:{'content-type':'application/json',origin},body:JSON.stringify({token})});
+  const response=await fetch(`${origin}/api/v1/session`,{method:'POST',headers:{'content-type':'application/json',origin},body:JSON.stringify({token}),signal:AbortSignal.timeout(15000)}).catch(error=>{throw new Error(`Desktop session authentication failed: ${error.message}\nLog: ${path.join(app.getPath('userData'),'service.log')}`);});
   if(!response.ok)throw new Error('Desktop session authentication failed.');
   const cookie=response.headers.get('set-cookie');if(!cookie)throw new Error('Service did not set a session cookie.');
   const match=cookie.match(/^([^=]+)=([^;]+)/);if(!match)throw new Error('Service session cookie could not be read.');
@@ -59,7 +70,18 @@ function installIPC() {
 }
 if(!app.requestSingleInstanceLock())app.quit();else {
   app.on('second-instance',()=>{if(mainWindow){if(mainWindow.isMinimized())mainWindow.restore();mainWindow.show();mainWindow.focus();}});
-  app.whenReady().then(async()=>{await startService();mainWindow=new BrowserWindow({width:1320,height:930,minWidth:760,minHeight:600,show:false,title:'Media Workbench',webPreferences:{preload:path.join(__dirname,'preload.cjs'),sandbox:true,contextIsolation:true,nodeIntegration:false,webSecurity:true,allowRunningInsecureContent:false,webviewTag:false,partition:'media-workbench'}});mainWindow.webContents.session.setPermissionRequestHandler((_contents,_permission,callback)=>callback(false));mainWindow.webContents.session.setPermissionCheckHandler(()=>false);mainWindow.webContents.setWindowOpenHandler(()=>({action:'deny'}));mainWindow.webContents.on('will-navigate',(event,url)=>{if(new URL(url).origin!==origin)event.preventDefault();});mainWindow.webContents.on('will-attach-webview',event=>event.preventDefault());installIPC();await installSession();await mainWindow.loadURL(origin);mainWindow.show();}).catch(error=>{dialog.showErrorBox('Media Workbench could not start',error.message);app.quit();});
+  app.whenReady().then(async()=>{await startService();mainWindow=new BrowserWindow({width:1320,height:930,minWidth:760,minHeight:600,show:false,title:'Media Workbench',webPreferences:{preload:path.join(__dirname,'preload.cjs'),sandbox:true,contextIsolation:true,nodeIntegration:false,webSecurity:true,allowRunningInsecureContent:false,webviewTag:false,partition:'media-workbench'}});mainWindow.webContents.session.setPermissionRequestHandler((_contents,_permission,callback)=>callback(false));mainWindow.webContents.session.setPermissionCheckHandler(()=>false);mainWindow.webContents.setWindowOpenHandler(()=>({action:'deny'}));mainWindow.webContents.on('will-navigate',(event,url)=>{if(new URL(url).origin!==origin)event.preventDefault();});mainWindow.webContents.on('will-attach-webview',event=>event.preventDefault());installIPC();await installSession();assertServiceRunning();await mainWindow.loadURL(origin);assertServiceRunning();startupFinished=true;mainWindow.show();}).catch(error=>{dialog.showErrorBox('Media Workbench could not start',error.message);app.quit();});
   app.on('window-all-closed',()=>app.quit());
-  app.on('before-quit',event=>{if(shutdownComplete||!service||service.exitCode!==null)return;event.preventDefault();if(quitting)return;quitting=true;const finish=()=>{shutdownComplete=true;app.quit();};service.once('exit',finish);service.stdin.on('error',()=>{});service.stdin.end('shutdown\n');setTimeout(()=>{if(service.exitCode===null&&service.pid){if(process.platform==='win32'){const killer=spawn(path.join(process.env.SystemRoot||'C:\\Windows','System32','taskkill.exe'),['/PID',String(service.pid),'/T','/F'],{shell:false,windowsHide:true,stdio:'ignore'});killer.once('exit',finish);}else {service.kill('SIGKILL');}}else finish();},6000).unref();});
+  app.on('before-quit',event=>{
+    if(shutdownComplete||!service||hasExited(service)||!service.pid)return;
+    event.preventDefault();if(quitting)return;quitting=true;
+    const forceStop=child=>new Promise((resolve,reject)=>{
+      if(hasExited(child)){resolve();return;}
+      if(process.platform!=='win32'){try{child.kill('SIGKILL');resolve();}catch(error){reject(error);}return;}
+      const killer=spawn(path.join(process.env.SystemRoot||'C:\\Windows','System32','taskkill.exe'),['/PID',String(child.pid),'/T','/F'],{shell:false,windowsHide:true,stdio:'ignore'});
+      const timeout=setTimeout(()=>{try{killer.kill();}catch{}reject(new Error('Owned service shutdown helper timed out.'));},1500);
+      killer.once('error',error=>{clearTimeout(timeout);reject(error);});killer.once('exit',code=>{clearTimeout(timeout);code===0||hasExited(child)?resolve():reject(new Error(`Owned service shutdown failed (${code}).`));});
+    });
+    void stopService(service,{forceStop}).catch(error=>{console.error(error.message);if(!serviceLog.destroyed)serviceLog.write(`Shutdown failed: ${error.message}\n`);}).finally(()=>{shutdownComplete=true;app.quit();});
+  });
 }

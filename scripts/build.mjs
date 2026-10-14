@@ -1,7 +1,20 @@
 import { build } from 'esbuild';
-import { mkdir, copyFile, cp } from 'node:fs/promises';
+import { mkdir, copyFile, cp, rm } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+import { buildInputs, recordBuild } from './build-state.mjs';
+const root=fileURLToPath(new URL('../',import.meta.url));
+process.chdir(root);
+const inputHash=await buildInputs(root);
+await rm('dist/.build-state.json',{force:true});
+await new Promise((resolve,reject)=>{
+ const child=spawn(process.execPath,[path.join(root,'node_modules/typescript/bin/tsc'),'--noEmit'],{cwd:root,shell:false,windowsHide:true,stdio:'inherit'});
+ child.once('error',reject);child.once('exit',(code,signal)=>code===0?resolve():reject(new Error(`TypeScript check failed (${signal||code}).`)));
+});
 await mkdir('dist/web', { recursive: true });
-await build({entryPoints:['apps/server/src/main.ts'],outfile:'dist/server/main.js',bundle:true,platform:'node',format:'esm',packages:'external',sourcemap:true});
-await build({entryPoints:['apps/web/src/main.tsx'],outdir:'dist/web',bundle:true,platform:'browser',external:['/fonts/*'],format:'esm',sourcemap:true,loader:{'.svg':'dataurl'},define:{'process.env.NODE_ENV':'"production"'}});
+await build({entryPoints:['apps/server/src/main.ts'],outfile:'dist/server/main.js',bundle:true,platform:'node',format:'esm',packages:'external',preserveSymlinks:true,sourcemap:true});
+await build({entryPoints:['apps/web/src/main.tsx'],outdir:'dist/web',bundle:true,platform:'browser',external:['/fonts/*'],format:'esm',preserveSymlinks:true,sourcemap:true,loader:{'.svg':'dataurl'},define:{'process.env.NODE_ENV':'"production"'}});
 await copyFile('apps/web/index.html','dist/web/index.html');
 await cp('apps/web/assets/fonts','dist/web/fonts',{recursive:true});
+await recordBuild(root,inputHash);

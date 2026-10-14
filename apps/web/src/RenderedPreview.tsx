@@ -17,21 +17,25 @@ export function RenderedPreview({recipe,options,presetId,jobs,artifacts,allowed,
   const [render,setRender]=useState<{key:string;jobId:string;plan:Plan}>();
   const [open,setOpen]=useState(false),[preparing,setPreparing]=useState(false),[error,setError]=useState(''),[playError,setPlayError]=useState(''),[cancelling,setCancelling]=useState(false);
   const busy=useRef(false),alive=useRef(true),dialog=useRef<HTMLDialogElement>(null),video=useRef<HTMLVideoElement>(null),autoplay=useRef(false);
+  const planning=useRef<AbortController|null>(null),submissionAttempt=useRef<{key:string;idempotencyKey:string}|null>(null);
   const [native,setNative]=useState<Native>(browserCapabilities),[copied,setCopied]=useState<'file'|'path'|''>(''),[fileError,setFileError]=useState('');
   const bridge=desktopBridge(),copiedTimer=useRef(0);
   useEffect(()=>{bridge?.capabilities().then(setNative).catch(()=>{});return()=>window.clearTimeout(copiedTimer.current);},[]);
   const job=jobs.find(j=>j.id===render?.jobId);
   const output=job?.state==='completed'?artifacts.find(a=>a.id===job.artifactId&&a.validated):undefined;
+  const currentOutput=useRef(output?.id);currentOutput.current=output?.id;
   const stale=!!render&&render.key!==key;
   const working=!!render&&(!job||!terminal.has(job.state));
-  useEffect(()=>()=>{alive.current=false;},[]);
-  useEffect(()=>{if(stale){autoplay.current=false;video.current?.pause();}},[stale]);
+  useEffect(()=>{alive.current=true;return()=>{alive.current=false;planning.current?.abort();};},[]);
+  useEffect(()=>{planning.current?.abort(new Error('The edit changed while preparing. Preview again to render the current edit.'));if(stale){autoplay.current=false;video.current?.pause();}},[key]);
   const show=()=>{onOpen();setOpen(true);setPlayError('');if(!dialog.current?.open)dialog.current?.showModal();};
   const close=()=>{autoplay.current=false;video.current?.pause();setOpen(false);dialog.current?.close();};
   const play=async()=>{
     if(!video.current||stale||!dialog.current?.open)return;
+    const player=video.current,playKey=key;
     autoplay.current=false;
-    try{await video.current.play();}catch{if(alive.current)setPlayError('Playback did not start. Press Play below, or download this rendered file if your browser does not support its format.');}
+    const current=()=>alive.current&&video.current===player&&currentKey.current===playKey&&dialog.current?.open;
+    try{await player.play();if(current())setPlayError('');}catch{if(current())setPlayError('Playback did not start. Press Play below, or download this rendered file if your browser does not support its format.');}
   };
   const start=async()=>{
     if(busy.current){show();return;}
@@ -39,35 +43,42 @@ export function RenderedPreview({recipe,options,presetId,jobs,artifacts,allowed,
     if(working){if(stale)autoplay.current=false;return;}
     if(render?.key===key&&output){if(video.current){video.current.currentTime=0;await play();}return;}
     // Never substitute a lower-quality proxy: these are the actual requested export settings.
-    busy.current=true;setPreparing(true);setRender(undefined);
+    busy.current=true;setPreparing(true);setRender(undefined);setFileError('');setCopied('');window.clearTimeout(copiedTimer.current);
     const snapshot={recipe,options,...(presetId?{presetId}:{})},snapshotKey=key;
+    const controller=new AbortController();planning.current=controller;
     try{
-      const plan=await api.plan(recipe,options,presetId);
+      const plan=await api.plan(recipe,options,presetId,{signal:controller.signal});
+      planning.current=null;
       if(!alive.current||currentKey.current!==snapshotKey){if(alive.current)setError('The edit changed while preparing. Preview again to render the current edit.');return;}
-      const submitted=await api.submit({type:'export',...snapshot});
+      // A lost response can still leave a durable job. Explicit retries recover that job.
+      if(submissionAttempt.current?.key!==snapshotKey)submissionAttempt.current={key:snapshotKey,idempotencyKey:crypto.randomUUID()};
+      const submitted=await api.submit({type:'export',...snapshot},submissionAttempt.current.idempotencyKey);
+      submissionAttempt.current=null;
       if(alive.current)setRender({key:snapshotKey,jobId:submitted.id,plan});
-      await refresh();
+      if(alive.current)await refresh();
     }catch(e){if(alive.current)setError(e instanceof Error?e.message:String(e));}
-    finally{busy.current=false;if(alive.current)setPreparing(false);}
+    finally{if(planning.current===controller)planning.current=null;busy.current=false;if(alive.current)setPreparing(false);}
   };
   const cancel=async()=>{
     if(!render||cancelling)return;autoplay.current=false;video.current?.pause();setCancelling(true);setError('');
     try{await api.action(`/jobs/${render.jobId}/cancel`);await refresh();}
-    catch(e){setError(e instanceof Error?e.message:String(e));}
-    finally{setCancelling(false);}
+    catch(e){if(alive.current)setError(e instanceof Error?e.message:String(e));}
+    finally{if(alive.current)setCancelling(false);}
   };
   const fileAction=async(kind:'file'|'path'|'reveal'|'save',id:string)=>{
     if(!bridge)return;setFileError('');
     try{
       if(kind==='file')await bridge.copyFile(id);else if(kind==='path')await bridge.copyPath(id);else if(kind==='reveal')await bridge.reveal(id);else await bridge.saveAs(id);
+      if(!alive.current||currentOutput.current!==id)return;
       if(kind==='file'||kind==='path'){setCopied(kind);window.clearTimeout(copiedTimer.current);copiedTimer.current=window.setTimeout(()=>setCopied(''),2200);}
-    }catch(e){setFileError(e instanceof Error?e.message:String(e));}
+    }catch(e){if(alive.current&&currentOutput.current===id)setFileError(e instanceof Error?e.message:String(e));}
   };
   const plan=job?.plan||render?.plan;
   const failed=!!job&&['failed','cancelled','interrupted'].includes(job.state);
+  const missing=job?.state==='completed'&&!output;
   const ready=!!output&&!stale;
   const processing=plan?.strategy==='copy'?'Copying':'Rendering';
-  const status:[string,IconTone|'muted']=stale?['Outdated','warn']:ready?['Ready','ok']:failed?[job!.state==='failed'?'Failed':job!.state==='cancelled'?'Cancelled':'Interrupted','danger']:preparing||working?[processing,'info']:['Not rendered','muted'];
+  const status:[string,IconTone|'muted']=stale?['Outdated','warn']:ready?['Ready','ok']:missing?['Unavailable','warn']:failed?[job!.state==='failed'?'Failed':job!.state==='cancelled'?'Cancelled':'Interrupted','danger']:preparing||working?[processing,'info']:['Not rendered','muted'];
   const picture=output?.media.streams.find(stream=>stream.type==='video');
   const progress=Math.min(1,Math.max(0,job?.progress||0));
   const clipboard=native.fileClipboard?.state==='available';
@@ -82,7 +93,7 @@ export function RenderedPreview({recipe,options,presetId,jobs,artifacts,allowed,
       {stale&&<p role="status" className="notice rp-notice"><EditorIcon name="alert" size={18} tone="warn"/><span>This render belongs to an earlier edit. {working?'Cancel it or wait for it to finish before previewing the current settings.':'Close it and render again to preview your current settings.'}</span></p>}
       <div className="rp-body">
         <div className="rp-stage">
-          {ready&&open?<video key={output!.id} ref={video} aria-label="Rendered export preview" controls preload="auto" src={contentUrl(output!.id)} onCanPlay={()=>{if(autoplay.current)void play();}} onError={()=>setPlayError('Cannot play this format here. Save or download the file to watch it.')}/>
+          {ready&&open?<video key={output!.id} ref={video} aria-label="Rendered export preview" controls preload="auto" src={contentUrl(output!.id)} onCanPlay={()=>{if(autoplay.current)void play();}} onPlaying={()=>setPlayError('')} onError={()=>setPlayError('Cannot play this format here. Save or download the file to watch it.')}/>
           :<div className="rp-placeholder">
             {(preparing||working)&&!failed?<>
               <span className="rp-spinner" aria-hidden="true"/>
@@ -90,9 +101,9 @@ export function RenderedPreview({recipe,options,presetId,jobs,artifacts,allowed,
               <progress aria-label="Preview render progress" max={1} value={progress}/>
               {job?.message&&<small>{job.message}</small>}
               {working&&<button disabled={cancelling||job?.state==='cancelling'} onClick={()=>void cancel()}><EditorIcon name="cancel" size={16}/>Cancel preview render</button>}
-            </>:failed?<>
+            </>:failed||missing?<>
               <EditorIcon name="alert" size={28} tone="danger"/>
-              <strong role="alert">Preview {job!.state}{job!.error?`: ${job!.error}`:''}.</strong>
+              <strong role="alert">{missing?'The rendered file is no longer available. Render it again to create a new preview.':`Preview ${job!.state}${job!.error?`: ${job!.error}`:''}.`}</strong>
               <button onClick={()=>void start()}><EditorIcon name="refresh" size={16}/>Render again</button>
             </>:<>
               <EditorIcon name="eye" size={28}/>

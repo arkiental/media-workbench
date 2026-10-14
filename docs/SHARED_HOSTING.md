@@ -1,5 +1,7 @@
 # Authenticated shared hosting
 
+For a domain-based browser service with a separate empty workspace and invite-only access, see [optional public web mode](PUBLIC_WEB_MODE.md) and its secret-free configuration templates. These templates do not expose the desktop instance or create accounts.
+
 Shared mode is implemented and has passed synthetic Windows-controller/Linux-worker integration and independent isolation tests. No public endpoint, real certificate, production Linux controller, or rootless Docker deployment has been tested in this session. Run the same isolation tests on the deployment host before admitting users. A working local container alone does not establish shared-worker isolation.
 
 The trusted controller owns the database and Docker orchestration. It must run from this source/build directory with a private data directory, an explicit owner credential, Docker CLI access, and the pinned runtime image. Docker access is privileged administration; never expose its socket or CLI through the renderer, API, reverse proxy, or user containers. The native media worker runs as UID 1000 with no network, a read-only root, dropped capabilities, no-new-privileges, PID/CPU/memory limits and only individually selected read-only inputs. No container image may declare implicit writable volumes. Worker images are resolved to immutable IDs at startup.

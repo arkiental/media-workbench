@@ -1,13 +1,25 @@
-# Third-party and tool provenance
+# Third-party notices
 
-The original application is MIT licensed. No LosslessCut, CompressO, or other application source was copied. Dependencies retain their licenses. package-lock.json records exact npm artifacts and integrity hashes. Electron, React, Fastify, esbuild, TypeScript, Zod and Node include their own notices; SQLite is public domain. Inspect transitive notices before distributing a release.
+The original Media Workbench application is licensed under MIT. Its complete license is retained as LICENSE in the source and resources/app/LICENSE in the Windows package.
 
-`.tools/manifest.json` records SHA256, version and origin of each staged tool. `npm run tools:verify` checks bytes against it. yt-dlp 2026.08.19 was fetched from the official GitHub release and verified against the release SHA2-256SUMS; the standalone executable includes separately licensed dependencies. See https://github.com/yt-dlp/yt-dlp#license . JavaScript challenges use the explicitly staged Node runtime, with remote component retrieval disabled.
+## Windows portable package
 
-The tested Windows FFmpeg is 9.0.1-full_build-www.gyan.dev with `--enable-gpl --enable-version3` and many optional libraries. It is a locally supplied binary, not an approved public bundle. Capture the exact `ffmpeg -buildconf` and acquire matching source, component notices and distribution compliance before redistribution. Builds containing `--enable-nonfree` must not be distributed. See https://www.ffmpeg.org/legal.html and https://github.com/FFmpeg/FFmpeg/blob/master/LICENSE.md . Merely running FFmpeg as a subprocess does not remove its distribution obligations.
+The portable ZIP contains Electron 44.3.0, the official Node 22.23.2 Windows x64 runtime, the application's production npm dependencies, and Playfair Display. Components retain their original licenses.
 
-The packaging script creates an unsigned **personal local build** with tools copied from the user's installation. It is not authorization or a claim that this composition is ready for public redistribution. No release is signed, published or uploaded. Arial/DejaVu font files used for legacy text rendering come from the operating system.
+- Electron's LICENSE and LICENSES.chromium.html remain at the package root. The latter includes Chromium and its bundled component notices.
+- Node is extracted from the official node-v22.23.2-win-x64.zip and checked against the published SHASUMS256.txt. Its full license and checksum list are retained in resources/app/.tools/Node-LICENSE.txt and Node-SHASUMS256.txt. Source and release: https://nodejs.org/dist/v22.23.2/ .
+- Production npm packages retain their license and notice files under resources/app/node_modules. Exact versions, npm artifact integrity records and retained notice filenames are listed in package-provenance.json. package-lock.json is also included. The supplemental abstract-logging notice is retained with that package.
+- Playfair Display: Copyright 2017 The Playfair Project Authors. SIL Open Font License 1.1. Its license is retained in resources/app/dist/web/fonts/OFL-PlayfairDisplay.txt. Source: https://github.com/google/fonts/tree/main/ofl/playfairdisplay .
 
-Playfair Display is bundled for matching interactive title editing and rendered exports. Source: https://github.com/google/fonts/tree/main/ofl/playfairdisplay . Copyright 2017 The Playfair Project Authors. Licensed under the SIL Open Font License 1.1; the license is retained in `apps/web/assets/fonts/OFL-PlayfairDisplay.txt` and copied to `dist/web/fonts` with the font.
+## Tools obtained on first launch
 
-The Debian13x64 Linux package separately bundles DejaVu Sans, CA certificates, ELF dependencies and explicit Node/yt-dlp/FFmpeg tools. Its provenance directory retains component copyright files, Node/yt-dlp license text and the exact FFmpeg source/configuration. Its complete dependency source-distribution audit remains outstanding; see docs/LINUX_PACKAGE_EVIDENCE.md. Windows rendering uses the installed OS font, while Linux package rendering was tested with its bundled font.
+FFmpeg, ffprobe and yt-dlp executables are not included in the Windows portable ZIP. The launcher downloads them directly for the user's local installation, checks pinned SHA-256 records before use, and retains the resulting tool manifest under resources/app/.tools. The exact downloads and hashes are also recorded in portable-tools.json and the bootstrap source.
+
+- FFmpeg and ffprobe: Gyan 8.0.1 full build, obtained from https://github.com/GyanD/codexffmpeg/releases/download/8.0.1/ffmpeg-8.0.1-full_build.7z . The archive's license and readme files are retained under resources/app/.tools/native-notices/ffmpeg. This build has separately licensed codec libraries and GPL features. FFmpeg licensing: https://ffmpeg.org/legal.html .
+- yt-dlp 2026.08.19: obtained from https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp.exe . The upstream project uses the Unlicense; the standalone executable's dependencies retain separate licenses. Upstream license information: https://github.com/yt-dlp/yt-dlp#license .
+
+The portable ZIP's notices do not relicense subsequently downloaded tools. If distributing a folder after native setup, review the exact native binaries, component notices and corresponding-source requirements separately. The published ZIP excludes these executables and their local backups.
+
+## Other build targets
+
+Developer-supplied .tools binaries and Linux packages are separate compositions. The local setup manifest records their versions and origins; they are not inputs to the public Windows portable ZIP. Linux bundles retain their own component and source-distribution records. No font files are copied from the user's Windows installation.

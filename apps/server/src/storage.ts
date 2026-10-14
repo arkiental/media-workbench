@@ -12,13 +12,15 @@ export async function managedPath(store:Store,id:string,allowDeleting=false){
  const file=path.join(root,id);const stat=await lstat(file);if(!stat.isFile()||stat.isSymbolicLink())throw Error('Artifact is not a regular managed file');
  if(path.dirname(await realpath(file))!==await realpath(root))throw Error('Artifact escapes managed storage');return file;
 }
-export async function publish(store:Store,staged:string,ownerId:string,name:string,media:MediaInfo,kind:Artifact['kind'],jobId?:string,sourceId?:string,reserved?:ReturnType<Store['reserve']>):Promise<Artifact>{
+export async function publish(store:Store,staged:string,ownerId:string,name:string,media:MediaInfo,kind:Artifact['kind'],jobId?:string,sourceId?:string,reserved?:ReturnType<Store['reserve']>,signal?:AbortSignal):Promise<Artifact>{
+ const cancelled=()=>{if(signal?.aborted)throw Error('Operation cancelled');};cancelled();
  const root=path.join(store.dataDir,'artifacts');if((await lstat(root)).isSymbolicLink())throw Error('Unsafe artifact directory');
  const stat=await lstat(staged);if(!stat.isFile()||stat.isSymbolicLink()||!stat.size)throw Error('Invalid staged output');
  const reservation=reserved||store.reserve(ownerId);if(reservation.bytes<stat.size)reservation.add(stat.size-reservation.bytes);
- try{const id=randomUUID();const target=path.join(root,id);await rename(staged,target);
+ try{cancelled();const id=randomUUID();const target=path.join(root,id);await rename(staged,target);
+ try{cancelled();
  const artifact:Artifact={id,ownerId,name:safeName(name),bytes:stat.size,media:{...media,size:stat.size},kind,createdAt:new Date().toISOString(),pinned:false,validated:true,...(jobId?{jobId}:{}),...(sourceId?{sourceId}:{})};
- store.put('artifact',id,ownerId,artifact);return artifact;}finally{if(!reserved)reservation.release();}
+ store.put('artifact',id,ownerId,artifact);return artifact;}catch(error){await rename(target,staged);throw error;}}finally{if(!reserved)reservation.release();}
 }
 /** Overlay images live beside artifacts as validated PNG files named by their record id. */
 export async function overlayPath(store:Store,id:string){

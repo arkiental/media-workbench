@@ -25,14 +25,23 @@ import { PolicySchema } from '../../../packages/contracts/src/index.ts';
 import { buildOpenAPI } from './openapi.ts';
 import { BandwidthLimiter } from './bandwidth.ts';
 import { captionLayout } from '../../../packages/contracts/src/caption.ts';
+import { PairingLimiter } from './pairing-rate.ts';
 
-export type ServerOptions={dataDir:string;ownerToken?:string;tools?:ToolPaths;encoders?:EncoderCapability[];host?:string;shared?:boolean;publicOrigin?:string;desktopSecret?:string;testOrigin?:string;startQueue?:boolean;workerConfig?:WorkerConfig;tunnelPrototype?:boolean};
+export type ServerOptions={dataDir:string;ownerToken?:string;tools?:ToolPaths;encoders?:EncoderCapability[];host?:string;shared?:boolean;publicOrigin?:string;privateOrigin?:string;privateNoToken?:boolean;desktopSecret?:string;testOrigin?:string;startQueue?:boolean;workerConfig?:WorkerConfig;tunnelPrototype?:boolean};
 type Auth={user:User;scopes:string[];id:string};
 declare module 'fastify' { interface FastifyInstance { store:Store; queue:Queue; tools:ToolPaths; encoders:EncoderCapability[]; } }
 const OVERLAY_BYTES=20*1024*1024;
 function bad(message:string,statusCode=400){return Object.assign(Error(message),{statusCode});}
 const safeEqual=(a:string,b:string)=>a.length===b.length&&timingSafeEqual(Buffer.from(a),Buffer.from(b));
 export async function createServer(options:ServerOptions){
+ if(options.privateNoToken&&(!options.privateOrigin||options.shared||options.publicOrigin||options.tunnelPrototype||!['127.0.0.1','::1','localhost'].includes(options.host||'127.0.0.1')))throw Error('Token-free private access requires a loopback host and private origin; public/shared hosting is not permitted');
+ if(options.shared&&options.tunnelPrototype)throw Error('Shared hosting cannot enable the anonymous tunnel prototype');
+ if(options.privateOrigin){
+  if(options.shared||options.tunnelPrototype)throw Error('Private access cannot enable shared hosting or the anonymous tunnel prototype');
+  let valid=false;try{const origin=new URL(options.privateOrigin);valid=origin.protocol==='https:'&&!origin.username&&!origin.password&&origin.origin===options.privateOrigin;}catch{}
+  if(!valid)throw Error('Private origin must be a bare HTTPS origin');
+  if(options.privateNoToken&&!new URL(options.privateOrigin).hostname.endsWith('.ts.net'))throw Error('Token-free private access requires a Tailscale HTTPS origin');
+ }
  const exposed=options.host&&!['127.0.0.1','::1','localhost'].includes(options.host);
  if((options.shared||exposed)&&(!options.shared||!options.workerConfig||!options.ownerToken||!options.publicOrigin?.startsWith('https://')||options.testOrigin))throw Error('Shared hosting is disabled: require isolated workers, explicit owner credential and HTTPS public origin');
  if(options.shared&&(!options.workerConfig?.proxyPath||!options.workerConfig.relayPath||options.workerConfig.proxyVolume))throw Error('Shared hosting is disabled: per-operation mandatory proxy is required');
@@ -53,29 +62,35 @@ export async function createServer(options:ServerOptions){
  const tunnelGuest=options.tunnelPrototype?(store.users().find(u=>u.name==='Tunnel guest')||store.createUser('Tunnel guest','member')):undefined;
  if(options.ownerToken){if(!store.auth(options.ownerToken))store.token(owner.id,'Local owner',['read','submit','manage'],options.ownerToken);}
  else if(!store.tokens(owner.id).length){const token=store.token(owner.id,'Local owner');await writeFile(path.join(store.dataDir,'owner-token'),token.token,{mode:0o600});}
- const startupCtx=worker?await worker.context({signal:new AbortController().signal,workDir:path.join(store.dataDir,'cache'),maxRuntimeSeconds:120,maxBytes:200000000}):undefined;
+ const startupController=new AbortController();const startupBase:ExecutionContext={signal:startupController.signal,workDir:path.join(store.dataDir,'cache'),maxRuntimeSeconds:120,maxBytes:200000000};
+ const startupCtx=worker?await worker.context(startupBase):startupBase;
  // Version probes spawn every bundled tool (yt-dlp alone unpacks itself); fill them in after startup instead of delaying readiness.
  const versions:Record<string,string>={};
- void Promise.race([toolVersions(tools,startupCtx),new Promise<Record<string,string>>(resolve=>setTimeout(()=>resolve({}),20000).unref())]).then(found=>{Object.assign(versions,found);}).catch(()=>{});
+ const versionCheck=toolVersions(tools,startupCtx).catch(()=>({}));
+ void Promise.race([versionCheck,new Promise<Record<string,string>>(resolve=>setTimeout(()=>resolve({}),20000).unref())]).then(found=>{Object.assign(versions,found);});
  const encoders:EncoderCapability[]=options.encoders??[];
+ const updateEncoders=(found:EncoderCapability[])=>{for(const capability of found){const i=encoders.findIndex(e=>e.name===capability.name);if(i<0)encoders.push(capability);else if(capability.testedAt>=encoders[i].testedAt)encoders[i]=capability;}};
  // Encoder smoke tests spawn many FFmpeg encodes; run them after the server is listening instead of blocking startup.
- if(!options.encoders)void testEncoders(tools,path.join(store.dataDir,'cache'),startupCtx).then(found=>{encoders.splice(0,encoders.length,...found);}).catch(()=>{});
+ const encoderCheck=options.encoders?Promise.resolve():testEncoders(tools,path.join(store.dataDir,'cache'),startupCtx).then(updateEncoders).catch(()=>{});
  const queue=new Queue(store,tools,encoders,options.testOrigin,worker,versions);if(options.startQueue===false)await queue.stop();
- const app=Fastify({logger:false,bodyLimit:3*1024*1024,requestTimeout:desktopLocal?0:120000,connectionTimeout:30000,forceCloseConnections:true});
+ const app=Fastify({logger:false,trustProxy:options.shared?['127.0.0.1','::1']:false,bodyLimit:3*1024*1024,requestTimeout:desktopLocal?0:120000,connectionTimeout:30000,forceCloseConnections:true});
  const routes:{method:string;url:string}[]=[];app.addHook('onRoute',route=>{for(const method of Array.isArray(route.method)?route.method:[route.method])if(route.url.startsWith('/api/v1/'))routes.push({method,url:route.url});});
  const bandwidth=new BandwidthLimiter();
- const sessions=new Map<string,{count:number;until:number}>();const activeTransfers=new Map<string,number>();const auxiliary=new Map<string,number>();const responses=new WeakMap<FastifyRequest,FastifyReply>();
+ const sessions=new PairingLimiter();const activeTransfers=new Map<string,number>();const auxiliary=new Map<string,number>();const responses=new WeakMap<FastifyRequest,FastifyReply>();
  await app.register(cookie);
  app.decorateRequest('auth',null);
  app.setErrorHandler((error,req,reply)=>{const code=error instanceof z.ZodError?400:(error as any).statusCode||400;reply.code(code).send({error:error instanceof z.ZodError?'Invalid request: '+error.issues.map(i=>`${i.path.join('.')}: ${i.message}`).join('; ').slice(0,1000):redactError(error)});});
  app.addHook('onRequest',async(req,reply)=>{
   responses.set(req,reply);
   const host=req.headers.host||'';let hostname='';try{hostname=new URL('http://'+host).hostname;}catch{}
-  if(!['127.0.0.1','localhost','[::1]',...(options.shared?[new URL(options.publicOrigin!).hostname]:[])].includes(hostname)&&!(options.tunnelPrototype&&/^[a-z0-9-]+\.trycloudflare\.com$/.test(hostname)))throw bad('Host is not permitted',403);
-  const origin=req.headers.origin;if(origin&&(options.shared?origin!==options.publicOrigin:origin!==`http://${host}`&&origin!==options.publicOrigin&&!(options.tunnelPrototype&&origin===`https://${host}`)))throw bad('Origin is not permitted',403);
+  if(!['127.0.0.1','localhost','[::1]',...(options.shared?[new URL(options.publicOrigin!).hostname]:[]),...(options.privateOrigin?[new URL(options.privateOrigin).hostname]:[])].includes(hostname)&&!(options.tunnelPrototype&&/^[a-z0-9-]+\.trycloudflare\.com$/.test(hostname)))throw bad('Host is not permitted',403);
+  const origin=req.headers.origin;const loopback=['127.0.0.1','localhost','[::1]'].includes(hostname);if(origin&&(options.shared?origin!==options.publicOrigin:options.privateOrigin?origin!==options.privateOrigin&&!(loopback&&origin===`http://${host}`):origin!==`http://${host}`&&origin!==options.publicOrigin&&!(options.tunnelPrototype&&origin===`https://${host}`)))throw bad('Origin is not permitted',403);
   reply.header('X-Content-Type-Options','nosniff').header('Referrer-Policy','no-referrer').header('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
   if(!req.url.startsWith('/api/v1/')||req.url==='/api/v1/session')return;
-  const bearer=req.headers.authorization?.match(/^Bearer (\S+)$/)?.[1];const auth=store.auth(bearer||req.cookies.mw_session||'')||(tunnelGuest&&{user:tunnelGuest,scopes:['read','submit','manage'],id:'tunnel-guest'} as Auth);if(!auth)throw bad('Pairing credential required',401);
+  const privateServe=options.privateNoToken&&host.toLowerCase()===new URL(options.privateOrigin!).host&&['127.0.0.1','::1','::ffff:127.0.0.1'].includes(req.raw.socket.remoteAddress||'')&&typeof req.headers['tailscale-user-login']==='string'&&req.headers['tailscale-user-login'].trim();
+  const privateOwner=privateServe?store.user(owner.id):undefined;
+  const bearer=req.headers.authorization?.match(/^Bearer (\S+)$/)?.[1];const auth=store.auth(bearer||req.cookies.mw_session||'')||(privateOwner&&{user:privateOwner,scopes:['read','submit','manage'],id:'private-serve-owner'} as Auth)||(tunnelGuest&&{user:tunnelGuest,scopes:['read','submit','manage'],id:'tunnel-guest'} as Auth);if(!auth)throw bad('Pairing credential required',401);
+  if(options.privateOrigin&&auth.user.role!=='owner')throw bad('Owner credential required for private access',403);
   (req as any).auth=auth;reply.header('Cache-Control','no-store');
   const scope=req.method==='GET'?'read':/^\/api\/v1\/(jobs|batches|uploads|overlays|sources\/(?:inspect|from-artifact)|export\/plan)/.test(req.url)?'submit':'manage';if(!auth.scopes.includes(scope))throw bad(`Credential requires ${scope} scope`,403);
  });
@@ -105,17 +120,17 @@ export async function createServer(options:ServerOptions){
  const params=(r:FastifyRequest)=>r.params as {id:string};
  async function auxiliaryWork<T>(req:FastifyRequest,fn:(ctx:ExecutionContext & {storageReservation?:ReturnType<Store['reserve']>})=>Promise<T>){
   const u=auth(req).user;const n=auxiliary.get(u.id)||0;if(n>=2)throw bad('Two preview/inspection operations already active',429);if([...auxiliary.values()].reduce((sum,count)=>sum+count,0)>=4)throw bad('Host preview/upload capacity reached',429);auxiliary.set(u.id,n+1);
-  let workDir='';const c=new AbortController();const abort=()=>c.abort();req.raw.on('aborted',abort);const response=responses.get(req)?.raw;response?.on('close',abort);
+  let workDir='';const c=new AbortController();const abort=()=>c.abort();req.raw.on('aborted',abort);const response=responses.get(req)?.raw;response?.on('close',abort);if(req.raw.aborted||response?.destroyed)c.abort();
   const maxRuntimeSeconds=req.url==='/api/v1/uploads'&&desktopLocal&&u.role==='owner'?u.policy.maxRuntimeSeconds:Math.min(120,u.policy.maxRuntimeSeconds);let timedOut=false;const deadline=setTimeout(()=>{timedOut=true;c.abort();},maxRuntimeSeconds*1000);deadline.unref();
   const reservation=worker?store.reserve(u.id):undefined;let releaseSource:(()=>void)|undefined;
   try{const sourceId=/^\/api\/v1\/sources\/([0-9a-f-]{36})\//.exec(req.url)?.[1];if(sourceId){const source=owned<Source>('source',sourceId,req);owned<Artifact>('artifact',source.artifactId,req);releaseSource=store.holdArtifact(source.artifactId);}
    workDir=await mkdtemp(path.join(store.dataDir,'work','inspect-'));const maxBytes=worker?Math.min(u.policy.maxInputBytes,Math.floor(store.availableBytes(u.id)/3)-WORKER_SCRATCH_OVERHEAD_BYTES):u.policy.maxInputBytes;if(maxBytes<=0)throw bad('Insufficient storage for bounded worker scratch',413);reservation?.add(3*(maxBytes+WORKER_SCRATCH_OVERHEAD_BYTES));
-   let ctx:ExecutionContext & {storageReservation?:ReturnType<Store['reserve']>}={signal:c.signal,workDir,maxRuntimeSeconds,maxBytes,storageReservation:reservation,allowedEncoders:u.policy.allowedEncoders,maxCpuCores:!worker&&u.role==='owner'?availableParallelism():u.policy.maxCpuCores,maxMemoryMiB:u.policy.maxMemoryMiB,bandwidthBytesPerSecond:u.policy.bandwidthBytesPerSecond,maxTransferBytes:u.policy.maxTransferBytes};if(worker){const sourceId=/^\/api\/v1\/sources\/([0-9a-f-]{36})\//.exec(req.url)?.[1];const artifactId=/^\/api\/v1\/artifacts\/([0-9a-f-]{36})\/thumbnail/.exec(req.url)?.[1];const inputs=sourceId?[await sourcePath(sourceId,req)]:artifactId?[await managedPath(store,artifactId)]:[];ctx=await worker.context(ctx,inputs);}return await fn(ctx);
+   let ctx:ExecutionContext & {storageReservation?:ReturnType<Store['reserve']>}={signal:c.signal,workDir,maxRuntimeSeconds,maxBytes,storageReservation:reservation,allowedEncoders:u.policy.allowedEncoders,maxCpuCores:!worker&&u.role==='owner'?availableParallelism():u.policy.maxCpuCores,maxMemoryMiB:u.policy.maxMemoryMiB,bandwidthBytesPerSecond:u.policy.bandwidthBytesPerSecond,maxTransferBytes:u.policy.maxTransferBytes};if(worker){const sourceId=/^\/api\/v1\/sources\/([0-9a-f-]{36})\//.exec(req.url)?.[1];const artifactId=/^\/api\/v1\/artifacts\/([0-9a-f-]{36})\/thumbnail/.exec(req.url)?.[1];const inputs=sourceId?[await sourcePath(sourceId,req)]:artifactId?[await managedPath(store,artifactId)]:[];ctx=await worker.context(ctx,inputs);}if(c.signal.aborted)throw Error('Operation cancelled');const result=await fn(ctx);if(c.signal.aborted)throw Error('Operation cancelled');return result;
   }catch(error){if(timedOut)throw bad('Operation exceeded total runtime policy',408);throw error;}finally{clearTimeout(deadline);req.raw.off('aborted',abort);response?.off('close',abort);try{if(workDir)await rm(workDir,{recursive:true,force:true});}finally{releaseSource?.();reservation?.release();auxiliary.set(u.id,(auxiliary.get(u.id)||1)-1);}}
  }
  const previewPermission=(req:FastifyRequest)=>{const p=auth(req).user.policy;if(!p.process||!p.expensiveFilters)throw bad('Preview processing permission required',403);};
- app.post('/api/v1/session',async(req,reply)=>{const key=req.ip;let attempts=sessions.get(key);if(!attempts||attempts.until<Date.now())sessions.set(key,attempts={count:0,until:Date.now()+60000});if(++attempts.count>20)throw bad('Too many pairing attempts',429);
-  const {token}=z.object({token:z.string().max(512)}).strict().parse(req.body);const a=store.auth(token);if(!a)throw bad('Invalid or revoked pairing credential',401);reply.setCookie('mw_session',token,{httpOnly:true,sameSite:'strict',path:'/',secure:!!options.shared});return {user:a.user};});
+ app.post('/api/v1/session',async(req,reply)=>{sessions.check(req.ip);
+  const {token}=z.object({token:z.string().max(512)}).strict().parse(req.body);const a=store.auth(token);if(!a)throw bad('Invalid or revoked pairing credential',401);if(options.privateOrigin&&a.user.role!=='owner')throw bad('Owner credential required for private access',403);const privateRequest=!!options.privateOrigin&&(req.headers.origin===options.privateOrigin||new URL('http://'+req.headers.host).hostname===new URL(options.privateOrigin).hostname);reply.setCookie('mw_session',token,{httpOnly:true,sameSite:'strict',path:'/',secure:!!options.shared||privateRequest});return {user:a.user};});
  app.delete('/api/v1/session',async(req,reply)=>{reply.clearCookie('mw_session',{path:'/'});return {ok:true};});
  app.get('/api/v1/capabilities',async(req):Promise<Capabilities>=>({mode:options.shared?'shared':'local',user:auth(req).user,features:['overlays-v1','upload-v1','download-v1','exact-cut-v1','copy-cut-v1','target-size-v1','crop-v1','captions-v1','audio-v1','projects-v1','pairing-v1'],tools:versions,encoders,native:Object.fromEntries(['fileClipboard','nativeDragOut','revealFile','externalActions'].map(k=>[k,{state:'unavailable',reason:options.shared?'Native operations are unavailable on remote visitors':'Use the paired desktop application for native actions'}])),sharedHosting:{enabled:!!options.shared,reason:options.shared?'Every native media operation runs in an isolated networkless Linux worker; downloader egress uses a dedicated filtered socket proxy':'Shared hosting requires explicit Docker worker configuration and HTTPS'}}));
  app.get('/api/v1/sources',async(req)=>store.all<Source>('source',auth(req).user.id));
@@ -134,7 +149,7 @@ export async function createServer(options:ServerOptions){
   return auxiliaryWork(req,async(ctx)=>{const file=path.join(ctx.workDir,'upload');const limit=Math.min(ctx.maxBytes||user.policy.maxInputBytes,ctx.storageReservation?Number.MAX_SAFE_INTEGER:store.availableBytes(user.id));let bytes=0;const reservation=ctx.storageReservation||store.reserve(user.id);
    const limiter=new Transform({transform(chunk,encoding,cb){try{bytes+=chunk.length;if(bytes>limit)throw bad('Upload/storage byte limit exceeded',413);if(!ctx.storageReservation)reservation.add(chunk.length);cb(null,chunk);}catch(error){cb(error as Error);}}});
    const input=req.body as import('node:stream').Readable;input.once('error',error=>limiter.destroy(error));input.once('aborted',()=>limiter.destroy(Error('Upload connection interrupted')));input.pipe(limiter);
-   try{await pipeline([limiter,...(desktopLocal&&user.role==='owner'?[]:[bandwidth.stream(user.id,user.policy.bandwidthBytesPerSecond,user.policy.maxTransferBytes)]),createWriteStream(file,{flags:'wx',mode:0o600})],{signal:ctx.signal});const media=desktopLocal&&user.role==='owner'?await inspectLocalImport(file,tools,ctx):await validateMedia(file,tools,ctx);enforceMedia(media,user.policy);const artifact=await publish(store,file,user.id,name,media,'original',undefined,undefined,reservation);return registerSource(store,artifact);}catch(error){input.unpipe(limiter);input.resume();throw error;}finally{if(!ctx.storageReservation)reservation.release();}});
+   try{await pipeline([limiter,...(desktopLocal&&user.role==='owner'?[]:[bandwidth.stream(user.id,user.policy.bandwidthBytesPerSecond,user.policy.maxTransferBytes)]),createWriteStream(file,{flags:'wx',mode:0o600})],{signal:ctx.signal});const media=desktopLocal&&user.role==='owner'?await inspectLocalImport(file,tools,ctx):await validateMedia(file,tools,ctx);enforceMedia(media,user.policy);const artifact=await publish(store,file,user.id,name,media,'original',undefined,undefined,reservation,ctx.signal);return registerSource(store,artifact);}catch(error){input.unpipe(limiter);input.resume();throw error;}finally{if(!ctx.storageReservation)reservation.release();}});
  });
  // Overlay images are PNG only: the browser normalises pasted or chosen images before upload.
  app.addContentTypeParser('image/png',(req,payload,done)=>done(null,payload));
@@ -202,7 +217,8 @@ export async function createServer(options:ServerOptions){
  app.get('/api/v1/sources/:id/thumb',async(req,reply)=>{const file=await sourcePath(params(req).id,req);previewPermission(req);const pts=z.coerce.number().finite().min(0).parse((req.query as any).pts);const data=await auxiliaryWork(req,async ctx=>{const target=path.join(ctx.workDir,'thumb.jpg');await extractThumbnail(file,target,pts,tools,ctx);return readFile(target);});return reply.type('image/jpeg').header('Cache-Control','private, max-age=3600').send(data);});
  app.get('/api/v1/sources/:id/frame',async(req,reply)=>{const file=await sourcePath(params(req).id,req);previewPermission(req);const pts=z.coerce.number().finite().min(0).parse((req.query as any).pts);const data=await auxiliaryWork(req,async ctx=>{const target=path.join(ctx.workDir,'frame.png');await extractFrame(file,target,pts,tools,ctx);return readFile(target);});return reply.type('image/png').send(data);});
  app.get('/api/v1/sources/:id/waveform',async(req)=>{const file=await sourcePath(params(req).id,req);previewPermission(req);const window=z.object({start:z.coerce.number().min(0).optional(),duration:z.coerce.number().positive().max(60).optional(),points:z.coerce.number().int().min(1).max(2000).optional(),track:z.coerce.number().int().min(0).max(32).optional()}).strict().parse(req.query);return auxiliaryWork(req,ctx=>waveform(file,tools,ctx,window));});
- app.post('/api/v1/export/plan',async(req)=>{const data=z.object({recipe:RecipeSchema,options:ExportSchema,presetId:Id.optional()}).strict().parse(req.body);const user=auth(req).user;const r=validateRequest({type:'export',...data},user);if(r.type!=='export')throw Error('Invalid export');const a=assertSource(r.recipe.sourceId,user);return planExport(r.recipe,r.options,a.media,user.policy.allowedEncoders.length?encoders.filter(e=>user.policy.allowedEncoders.includes(e.name)):encoders);});
+ app.post('/api/v1/export/plan',async(req)=>{const data=z.object({recipe:RecipeSchema,options:ExportSchema,presetId:Id.optional()}).strict().parse(req.body);const user=auth(req).user;const r=validateRequest({type:'export',...data},user);if(r.type!=='export')throw Error('Invalid export');const a=assertSource(r.recipe.sourceId,user);const resolve=()=>planExport(r.recipe,r.options,a.media,user.policy.allowedEncoders.length?encoders.filter(e=>user.policy.allowedEncoders.includes(e.name)):encoders);
+  try{return resolve();}catch(error){if(options.encoders||!(error instanceof Error)||!error.message.startsWith('No operational '))throw error;return auxiliaryWork(req,async ctx=>{updateEncoders(await testEncoders(tools,ctx.workDir,ctx,r.options.codec));return resolve();});}});
  app.get('/api/v1/projects',async(req)=>store.all<Project>('project',auth(req).user.id));
  app.post('/api/v1/projects',async(req)=>{const p=z.object({id:Id.optional(),name:z.string().min(1).max(120),recipe:RecipeSchema,options:ExportSchema}).strict().parse(req.body);const user=auth(req).user;assertSource(p.recipe.sourceId,user);if(p.recipe.audio.sourceId)assertSource(p.recipe.audio.sourceId,user);assertOverlays(p.recipe,user);if(p.id)owned('project',p.id,req);const id=p.id||randomUUID();return store.put('project',id,user.id,{...p,id,updatedAt:new Date().toISOString()});});
  app.delete('/api/v1/projects/:id',async(req)=>{owned('project',params(req).id,req);store.delete('project',params(req).id,auth(req).user.id);return {ok:true};});
@@ -236,6 +252,7 @@ export async function createServer(options:ServerOptions){
  app.get('/api/v1/desktop/artifacts/:id',async(req)=>{localOwner(req);const secret=String(req.headers['x-desktop-secret']||'');if(!options.desktopSecret||!safeEqual(secret,options.desktopSecret))throw bad('Desktop companion pairing required',403);const a=owned<Artifact>('artifact',params(req).id,req);return {path:await nativeCopy(store,a),name:a.name,mediaTypes:a.media.streams.map(s=>s.type).filter(s=>['video','audio'].includes(s))};});
  app.get('/api/v1/openapi.json',async()=>buildOpenAPI(routes));
  const webRoot=path.resolve('dist/web');if(existsSync(path.join(webRoot,'index.html')))await app.register(fastifyStatic,{root:webRoot});else app.get('/',async(req,reply)=>reply.type('text/html').send('<p>Media Workbench service is running. Run npm run build for the browser application.</p>'));
- app.addHook('onClose',async()=>{await queue.stop();store.close();});
+ app.addHook('preClose',async()=>{startupController.abort();});
+ app.addHook('onClose',async()=>{await Promise.allSettled([queue.stop(),versionCheck,encoderCheck]);store.close();});
  return Object.assign(app,{store,queue,tools,encoders});
 }

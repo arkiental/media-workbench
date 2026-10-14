@@ -1,0 +1,9 @@
+# Template only: validate on the selected host before starting a public proxy.
+# MW_PUBLIC_HOST must match the hostname in the controller's MW_PUBLIC_ORIGIN.
+# The application stays on loopback. Do not serve its private data directory.
+{$MW_PUBLIC_HOST} {
+    request_body {
+        max_size 268435456
+    }
+    reverse_proxy 127.0.0.1:4319
+}

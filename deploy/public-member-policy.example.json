@@ -1,0 +1,23 @@
+{
+  "upload": true,
+  "download": true,
+  "process": true,
+  "expensiveFilters": true,
+  "maxInputBytes": 268435456,
+  "maxOutputBytes": 268435456,
+  "maxDuration": 1800,
+  "maxPixels": 2073600,
+  "maxQueued": 8,
+  "concurrency": 1,
+  "maxRuntimeSeconds": 300,
+  "diskBytes": 2147483648,
+  "retentionHours": 24,
+  "allowedSites": [],
+  "allowedInputCodecs": [],
+  "allowedOutputCodecs": [],
+  "allowedEncoders": ["libx264"],
+  "maxCpuCores": 1,
+  "maxMemoryMiB": 1024,
+  "bandwidthBytesPerSecond": 4194304,
+  "maxTransferBytes": 536870912
+}

@@ -25,7 +25,7 @@ async function readThumbnail(ctx:DownloadContext){
  }catch{if(ctx.signal.aborted)throw Error('Operation cancelled');return undefined;}
 }
 export async function inspectDownload(request:DownloadRequest,tools:ToolPaths,ctx:DownloadContext){
- await validateDestination(request.url,ctx.policy.allowedSites,ctx.testOrigin);
+ await validateDestination(request.url,ctx.policy.allowedSites,ctx.testOrigin,ctx.signal);
  const proxy=await createEgressProxy(Math.min(ctx.policy.maxInputBytes,ctx.policy.maxTransferBytes,10000000),ctx.signal,ctx.testOrigin,ctx.policy.bandwidthBytesPerSecond);
  try{
   const data=await metadata(request,tools,ctx,proxy.url,`1:${INSPECTION_LIMIT}`,true);const entries=(Array.isArray(data.entries)?data.entries:[data]).filter((entry:unknown)=>entry&&typeof entry==='object'&&!Array.isArray(entry));
@@ -43,7 +43,7 @@ export async function inspectDownload(request:DownloadRequest,tools:ToolPaths,ct
  }catch(e){throw Error(redactError(ctx.signal.aborted?'Operation cancelled':proxy.violation||e));}finally{proxy.close();}
 }
 export async function downloadMedia(request:DownloadRequest,tools:ToolPaths,ctx:DownloadContext){
- await validateDestination(request.url,ctx.policy.allowedSites,ctx.testOrigin);
+ await validateDestination(request.url,ctx.policy.allowedSites,ctx.testOrigin,ctx.signal);
  const proxy=await createEgressProxy(Math.min(ctx.policy.maxInputBytes+2000000,ctx.policy.maxTransferBytes),ctx.signal,ctx.testOrigin,ctx.policy.bandwidthBytesPerSecond);
  const format=request.format||(request.preference==='audio'?'bestaudio/best':request.preference==='compatible'?'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best':'bestvideo+bestaudio/best');
  try{

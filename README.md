@@ -8,6 +8,8 @@ New editing sessions use **Cutting → Fast when possible**: simple trims copy c
 
 ## Run on Windows
 
+For the Windows x64 portable release, extract the complete ZIP and run **Start Media Workbench.cmd**. The first launch needs internet to download and checksum-verify the pinned official media tools; later local-file editing works offline. Node and Electron are included. Data stays beside the launcher in `data/`. See [portable instructions](docs/WINDOWS_PORTABLE.md) for requirements, licenses and workspace backup.
+
 Desktop imports default to 20 GiB per file and 24 hours of media, with 100 GiB of managed storage; custom limits are preserved. Local imports report upload progress and check metadata and short beginning/end decodes instead of decoding the entire file. Downloads allow an editable filename and a native destination-folder picker; an additional managed copy stays in Library and existing destination files are never overwritten. Right-click text fields for Paste. See [v0.2.1 changes and validation](docs/RELEASE_v0.2.1.md).
 
 Maximum-size exports allocate the byte budget to container overhead, audio and video before encoding. H.264/HEVC use a single encoding pass with a bounded bitrate buffer instead of mandatory two-pass rendering. A completed candidate is checked against the exact byte ceiling before full decode validation; an oversized candidate may use the configured bounded correction attempts. The final file retains its full duration, and impossible limits fail without publishing. Quality/bitrate exports keep their existing settings. Run `npx tsx scripts/benchmark-size.ts current` for a repeatable 12-second 1080p motion benchmark (results in `test-output/size-benchmark`).

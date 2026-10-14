@@ -2,20 +2,16 @@
 setlocal
 cd /d "%~dp0"
 
-if not exist node_modules\electron\dist\electron.exe (
+if not exist node_modules\ (
   echo Installing dependencies...
   call npm ci --ignore-scripts || goto :fail
-  call node node_modules\electron\install.js || goto :fail
 )
-if not exist .tools\node.exe (
-  echo Setting up tools...
-  call npm run tools:setup || goto :fail
-)
-
-echo Building latest version...
-call npm run build || goto :fail
+set "MW_LAUNCH_NODE=node"
+if exist .tools\node.exe set "MW_LAUNCH_NODE=%~dp0.tools\node.exe"
+call "%MW_LAUNCH_NODE%" scripts\prepare-launch.mjs || goto :fail
 
 echo Starting Media Workbench...
+set ELECTRON_RUN_AS_NODE=
 start "" /b node_modules\electron\dist\electron.exe apps\desktop\main.cjs
 exit /b 0
 

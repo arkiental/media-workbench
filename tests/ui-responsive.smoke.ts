@@ -386,7 +386,8 @@ try {
   await noOverflow('Mobile audio inspector');
   await touchTargets('Mobile audio inspector');
   await tool('Transform');
-  await page.getByRole('checkbox', { name: 'Resize', exact: true }).check();
+  const resizeSwitch=page.getByRole('switch', { name: 'Resize', exact: true });
+  await resizeSwitch.click();assert.equal(await resizeSwitch.getAttribute('aria-checked'),'true');
   await page.getByLabel('Output width', { exact: true }).fill('160');
   await page.getByLabel('Output height', { exact: true }).fill('90');
   await noOverflow('Mobile transform inspector');
@@ -467,8 +468,8 @@ try {
   await touchTargets('Mobile import and URL download');
   await capture('after-import-mobile');
   await page.getByRole('button',{name:'From a link',exact:true}).click();
-  await page.getByLabel('Video or audio links', { exact: true }).fill('not a media URL');
-  await page.getByRole('button', { name: 'Inspect available media', exact: true }).click();
+  await page.getByLabel('Video or audio links', { exact: true }).fill('ftp://example.invalid/video.mp4');
+  await page.getByRole('button', { name: 'Inspect media', exact: true }).click();
   await page.getByRole('alert').waitFor();
   await noOverflow('Mobile input error state');
   checks.push('Invalid URL shows a visible error without starting an external content download');
