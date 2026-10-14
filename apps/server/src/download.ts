@@ -5,6 +5,7 @@ import { runProcess } from '../../../packages/media/src/process.ts';
 import { createEgressProxy, validateDestination } from './network.ts';
 export type DownloadContext = ExecutionContext & { policy:Policy; testOrigin?:string; cookieFile?:string; browserCookie?:{browser:string;profile?:string} };
 const INSPECTION_LIMIT=100;
+const LOCAL_INPUT=['-protocol_whitelist','file,pipe','-format_whitelist','mov,matroska,webm,avi,mpegts,mpeg,mpegvideo,h264,hevc,av1,mp3,aac,flac,wav,ogg,asf,flv,image2,png_pipe,jpeg_pipe,gif'];
 function args(tools:ToolPaths,proxy:string,ctx:DownloadContext,selection='1'){return ['--ignore-config','--no-plugin-dirs','--no-playlist','--playlist-items',selection,'--lazy-playlist','--no-check-formats','--no-progress','--no-remote-components','--proxy',proxy,'--socket-timeout','20','--retries','2','--fragment-retries','2','--restrict-filenames','--no-cache-dir','--js-runtimes',`node:${tools.node||process.execPath}`,...(tools.ffmpeg===path.basename(tools.ffmpeg)?[]:['--ffmpeg-location',path.resolve(tools.ffmpeg)]),...(ctx.cookieFile?['--cookies',ctx.cookieFile]:[]),...(ctx.browserCookie?['--cookies-from-browser',ctx.browserCookie.browser+(ctx.browserCookie.profile?':'+ctx.browserCookie.profile:'')]:[])];}
 async function metadata(request:DownloadRequest,tools:ToolPaths,ctx:DownloadContext,proxy:string,selection:string,thumbnail=false){
  const result=await runProcess(tools.ytdlp,[...args(tools,proxy,ctx,selection),'--dump-single-json','--skip-download',...(thumbnail?['--no-simulate','--write-thumbnail','-o',path.join(ctx.workDir,'thumb.%(ext)s')]:[]),'--',request.url],ctx,{maxStdoutBytes:8*1024*1024});
@@ -82,11 +83,11 @@ export async function downloadMedia(request:DownloadRequest,tools:ToolPaths,ctx:
   }
   let result=path.join(ctx.workDir,files[0]);let size=(await stat(result)).size;if(!size)throw Error('Downloaded file is empty. Inspect the link and try again.');if(size>ctx.policy.maxInputBytes)throw Error('Downloaded file exceeds policy');
   if(request.preference!=='audio'&&path.extname(result).toLowerCase()!=='.mp4'){
-   const probe=await runProcess(tools.ffprobe,['-v','error','-protocol_whitelist','file,pipe','-show_entries','stream=codec_type','-of','json',result],ctx,{maxStdoutBytes:1024*1024});
+   const probe=await runProcess(tools.ffprobe,['-v','error',...LOCAL_INPUT,'-show_entries','stream=codec_type','-of','json',result],ctx,{maxStdoutBytes:1024*1024});
    if(JSON.parse(probe.stdout.toString()).streams?.some((stream:{codec_type:string})=>stream.codec_type==='video')){
     ctx.onStage?.('processing');ctx.onProgress?.(lastProgress,'Converting download to MP4');
     const output=path.join(ctx.workDir,'converted.mp4'),limit=Math.min(ctx.policy.maxInputBytes,ctx.maxBytes??ctx.policy.maxInputBytes),threads=String(Math.max(1,Math.floor(ctx.maxCpuCores??2)));
-    const convert=(codecs:string[])=>runProcess(tools.ffmpeg,['-hide_banner','-nostdin','-v','error','-protocol_whitelist','file,pipe','-i',result,'-map','0:v:0','-map','0:a?','-sn','-dn',...codecs,'-threads',threads,'-fs',String(limit+1),'-movflags','+faststart','-n',output],ctx,{outputPath:output});
+    const convert=(codecs:string[])=>runProcess(tools.ffmpeg,['-hide_banner','-nostdin','-v','error',...LOCAL_INPUT,'-i',result,'-map','0:v:0','-map','0:a?','-sn','-dn',...codecs,'-threads',threads,'-fs',String(limit+1),'-movflags','+faststart','-n',output],ctx,{outputPath:output});
     try{await convert(['-c','copy']);}catch(error){
      if(ctx.signal.aborted||!/not supported|could not find tag|not currently supported|unsupported codec|incorrect codec|invalid argument/i.test(String(error)))throw error;
      await rm(output,{force:true});ctx.onProgress?.(lastProgress,'Encoding a compatible MP4');await convert(['-c:v','libx264','-preset','veryfast','-crf','18','-pix_fmt','yuv420p','-c:a','aac','-b:a','192k']);
