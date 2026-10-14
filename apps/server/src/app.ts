@@ -151,7 +151,18 @@ export async function createServer(options:ServerOptions){
    return store.put<OverlayImage>('overlay',id,user.id,{id,ownerId:user.id,name,width,height,bytes:head.length,createdAt:new Date().toISOString()});});
  });
  app.get('/api/v1/overlays/:id/content',async(req,reply)=>{const image=owned<OverlayImage>('overlay',params(req).id,req);return reply.header('Cache-Control','private, max-age=86400, immutable').type('image/png').send(await readFile(await overlayPath(store,image.id)));});
- app.post('/api/v1/sources/inspect',async(req)=>{const request=DownloadSchema.parse(req.body);const user=auth(req).user;if(!user.policy.download)throw bad('Download permission required',403);if(request.cookieId)localOwner(req);return auxiliaryWork(req,ctx=>withCookies(store,user.id,request.cookieId,ctx.workDir,opts=>inspectDownload(request,tools,{...ctx,...opts,policy:user.policy,testOrigin:options.testOrigin})));});
+ // Cache only completed anonymous inspections, scoped to the user and current policy.
+ // Downloads still extract fresh stream URLs; saved-account inspections are never cached.
+ const inspections=new Map<string,{expires:number;value:Awaited<ReturnType<typeof inspectDownload>>}>();
+ app.post('/api/v1/sources/inspect',async(req)=>{
+  const request=DownloadSchema.parse(req.body),user=auth(req).user;if(!user.policy.download)throw bad('Download permission required',403);if(request.cookieId)localOwner(req);
+  for(const [key,item] of inspections)if(item.expires<=Date.now())inspections.delete(key);
+  const key=JSON.stringify([user.id,request.url,user.policy]);const cached=!request.cookieId&&inspections.get(key);if(cached)return cached.value;
+  req.raw.socket.setTimeout?.(125000);
+  const result=await auxiliaryWork(req,ctx=>withCookies(store,user.id,request.cookieId,ctx.workDir,opts=>inspectDownload(request,tools,{...ctx,...opts,policy:user.policy,testOrigin:options.testOrigin})));
+  if(!request.cookieId){if(inspections.size>=16)inspections.delete(inspections.keys().next().value!);inspections.set(key,{expires:Date.now()+120000,value:result});}
+  return result;
+ });
  app.get('/api/v1/jobs',async(req)=>store.jobs(auth(req).user.id));
  app.get('/api/v1/jobs/:id',async(req)=>{const job=store.job(params(req).id,auth(req).user.id);if(!job)throw bad('Job not found',404);return job;});
  app.post('/api/v1/jobs',async(req,reply)=>{const job=submit(req.body,auth(req).user,idempotency(req));reply.code(202);return job;});

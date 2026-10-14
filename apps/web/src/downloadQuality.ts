@@ -32,7 +32,7 @@ export function formatRows(formats:Format[]):FormatRow[] {
     const chosen=choices[0],needsAudio=chosen.acodec==='none'&&audioOnly.length>0;
     const bytes=chosen.bytes?chosen.bytes+(needsAudio?audioOnly[0].bytes||0:0):undefined;
     const codec=[codecName(chosen.vcodec),codecName(needsAudio?audioOnly[0].acodec:chosen.acodec)].filter(Boolean).join(' / ');
-    return {key:chosen.id,format:needsAudio?`${chosen.id}+bestaudio/${chosen.id}`:chosen.id,kind:'video',ext:(chosen.ext||'').toUpperCase(),tier:chosen.ext==='mp4'||!chosen.ext?(tiers[index]||''):'',quality:resolution===2160?'4K':`${resolution}p`,resolution:`${chosen.width} × ${chosen.height}`,codec,bytes};
+    return {key:chosen.id,format:needsAudio?`${chosen.id}+${audioOnly[0].id}/${chosen.id}`:chosen.id,kind:'video',ext:'MP4',tier:tiers[index]||'',quality:resolution===2160?'4K':`${resolution}p`,resolution:`${chosen.width} × ${chosen.height}`,codec,bytes};
   });
   const seen=new Set<string>(),audio:FormatRow[]=[];
   for(const f of audioOnly) {

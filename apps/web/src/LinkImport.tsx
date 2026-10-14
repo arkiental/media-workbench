@@ -53,6 +53,7 @@ export function LinkImport(p:LinkImportProps) {
       </section>
       <section className="li-step li-formats"><div className="li-step-head"><h2><span>3.</span> Choose format &amp; quality</h2>
         <div className="li-filters" role="group" aria-label="Format type">{([['video','camera','Video'],['audio','music','Audio'],['all','layers','All formats']] as const).map(([id,icon,label])=><button key={id} type="button" aria-pressed={filter===id} onClick={()=>setFilter(id)}><EditorIcon name={icon} size={20}/>{label}</button>)}</div></div>
+        <p>Video downloads are saved as MP4. Other video formats are converted automatically.</p>
         <div className="li-table" role="radiogroup" aria-label="Format and quality">
           <div className="li-row li-th" aria-hidden="true"><span/><span>Format</span><span>Quality</span><span>Resolution</span><span>Codec</span><span>File size</span></div>
           {visible.map(row=><label key={row.key} className={`li-row${selected?.key===row.key?' is-selected':''}`}>
@@ -65,7 +66,7 @@ export function LinkImport(p:LinkImportProps) {
       </section>
       <section className="li-step"><h2><span>4.</span> Download</h2>
         <div className="li-save">
-          <label className="li-name"><input aria-label="File name" maxLength={160} value={fileName} disabled={busy} onChange={e=>setFileName(e.target.value)} placeholder="Video name"/><span>{selected?.ext?`.${selected.kind==='video'&&selected.format.includes('+')?'mkv':selected.ext.toLowerCase()}`:''}</span></label>
+          <label className="li-name"><input aria-label="File name" maxLength={160} value={fileName} disabled={busy} onChange={e=>setFileName(e.target.value)} placeholder="Video name"/><span>{selected?.kind==='audio'?`.${selected.ext.toLowerCase()}`:'.mp4'}</span></label>
           <div className="li-dest"><EditorIcon name="folder" size={22}/><span title={destination?.label}>{destination?.label||'Library'}</span><button type="button" disabled={busy||!desktopBridge()?.chooseDownloadFolder} title={desktopBridge()?.chooseDownloadFolder?'Choose a folder; a copy also stays in Library':'Use the desktop app to choose a folder'} onClick={()=>void chooseFolder()}>Change</button>{destination&&<button type="button" disabled={busy} onClick={()=>setDestination(undefined)}>Reset</button>}</div>
           <button className="li-go" type="button" disabled={!p.canDownload||busy||!fileName.trim()||/[\\/:*?"<>|\x00-\x1f]/.test(fileName)} onClick={()=>p.download(selected?.format||'',selected?.kind||'video',fileName.trim(),destination?.id)}><EditorIcon name="download" size={30}/><span><b>{p.working==='download'?'Queueing…':'Download'}</b>{selected?.bytes?<small>{size(selected.bytes)}</small>:null}</span></button>
         </div>

@@ -37,7 +37,7 @@ async function fixture(t: TestContext) {
 }
 
 async function completeFile(workDir: string) {
-  await writeFile(path.join(workDir, 'download.mkv'), fixtureBytes);
+  await writeFile(path.join(workDir, 'download.mp4'), fixtureBytes);
   return { stdout: Buffer.alloc(0), stderr: '', exitCode: 0 };
 }
 
@@ -131,6 +131,7 @@ test('inspection and download retain PATH FFmpeg discovery and forward explicit 
       assert.deepEqual(await readFile(downloaded.path), fixtureBytes);
       assert.equal(calls.filter(args=>args.includes('--dump-single-json')).length,1);
       assert.equal(calls.filter(args=>args.includes('--write-thumbnail')).length,1);
+      assert.equal(calls.length,2,'inspection extracts formats and its optional thumbnail in one native call');
       assert.equal(calls.filter(args=>args.includes('--progress-template')).length,1);
       for (const args of calls) {
         const index = args.indexOf('--ffmpeg-location');
@@ -141,6 +142,7 @@ test('inspection and download retain PATH FFmpeg discovery and forward explicit 
       assert.ok(args.lastIndexOf('--progress') > args.indexOf('--no-progress'), 'machine progress overrides the metadata quiet default');
       assert.ok(args.includes('--newline'));
       assert.equal(args[args.indexOf('--progress-delta') + 1], '0.25');
+      assert.equal(args[args.indexOf('--merge-output-format') + 1], 'mp4');
       assert.ok(args.includes('download:MW_DOWNLOAD:%(info.format_id)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.status)s'));
     });
   }
