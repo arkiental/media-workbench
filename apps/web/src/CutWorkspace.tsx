@@ -1,9 +1,11 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Recipe } from '../../../packages/contracts/src/index';
 import { api, contentUrl } from './api';
 import { loadSourceFrame } from './source-frame';
 import type { WorkspaceState } from './drafts';
 import {EditorIcon,type IconTone} from './EditorIcon';
+import {compactEditorQuery} from './compact-editor';
+import {useTimelineGestures} from './useTimelineGestures';
 
 const tools:[string,string,IconTone][]=[['Text','text','text'],['Overlay','image','overlay'],['Audio','audio','audio'],['Transform','transform','video'],['Cut','cut','cut']];
 const toolTone=(tool:string)=>tools.find(([value])=>value===tool)?.[2]||'cut';
@@ -18,19 +20,24 @@ const stamp=(seconds:number)=>{
 };
 
 // Editing text is local until committed; an empty intermediate value must not create a zero-length recipe.
-function BoundaryInput({label,value,commit}:{label:string;value:number;commit:(value:number)=>boolean}) {
-  const [text,setText]=useState(stamp(value));
-  useEffect(()=>setText(stamp(value)),[value]);
+function BoundaryInput({label,value,commit,seconds=false}:{label:string;value:number;commit:(value:number)=>boolean;seconds?:boolean}) {
+  const format=(value:number)=>seconds?value.toFixed(3):stamp(value);
+  const [text,setText]=useState(format(value));
+  const editing=useRef(false),dirty=useRef(false);
+  useEffect(()=>{if(!editing.current)setText(format(value));},[value,seconds]);
   const apply=()=>{
-    if(text===stamp(value))return;
+    editing.current=false;
+    if(!dirty.current){setText(format(value));return;}
+    dirty.current=false;
+    if(text===format(value))return;
     const parts=text.trim().split(':');
     const valid=/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(text.trim())||/^\d{1,2}:[0-5]\d(?:\.\d{1,3})?$/.test(text.trim())||/^\d+:[0-5]\d:[0-5]\d(?:\.\d{1,3})?$/.test(text.trim());
     const seconds=parts.reduce((total,part)=>total*60+Number(part),0);
-    if(!valid||!commit(seconds))setText(stamp(value));else setText(stamp(seconds));
+    if(!valid||!commit(seconds))setText(format(value));else setText(format(seconds));
   };
   return <input aria-label={label} title="Enter hours:minutes:seconds.milliseconds or seconds" type="text" inputMode="decimal" spellCheck={false} value={text}
-    onChange={e=>setText(e.target.value)} onBlur={apply}
-    onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();e.currentTarget.blur();}if(e.key==='Escape'){e.preventDefault();setText(stamp(value));}}}/>;
+    onFocus={()=>{editing.current=true;dirty.current=false;}} onChange={e=>{dirty.current=true;setText(e.target.value);}} onBlur={apply}
+    onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();e.currentTarget.blur();}if(e.key==='Escape'){e.preventDefault();e.stopPropagation();dirty.current=false;setText(format(value));}}}/>;
   }
 type Props={
   viewerActions:React.ReactNode;
@@ -50,7 +57,50 @@ export function CutWorkspace({viewerActions,exportSummary,tool,setTool,playbackO
   const wavePeak=Math.max(.001,...wave.map(Math.abs));
   const fit=workspace.viewerFit||'fit',setFit=(value:string)=>setWorkspace({...workspace,viewerFit:value as 'fit'|'fill'});
   const setSelected=(value:number)=>setWorkspace({...workspace,selected:value});
-  const setZoom=(value:number)=>setWorkspace({...workspace,zoom:value});
+  const timelineScroll=useRef<HTMLDivElement>(null);
+  const zoomAnchor=useRef<{fraction:number;offset:number}|undefined>(undefined);
+  const timelineInitialized=useRef(false);
+  const [timelineWindow,setTimelineWindow]=useState({start:0,end:1,width:0});
+  const [mobile,setMobile]=useState(()=>window.matchMedia(compactEditorQuery).matches);
+  const [timelineOptions,setTimelineOptions]=useState(false);
+  const timelineWindowFrame=useRef(0),followSuspendedUntil=useRef(0);
+  const updateTimelineWindow=()=>{
+    if(!window.matchMedia(compactEditorQuery).matches||timelineWindowFrame.current)return;
+    timelineWindowFrame.current=requestAnimationFrame(()=>{
+      timelineWindowFrame.current=0;
+      const el=timelineScroll.current;if(!el)return;
+      const next={start:el.scrollLeft/el.scrollWidth,end:(el.scrollLeft+el.clientWidth)/el.scrollWidth,width:el.clientWidth};
+      setTimelineWindow(previous=>previous.start===next.start&&previous.end===next.end&&previous.width===next.width?previous:next);
+    });
+  };
+  const centerPlayhead=(at=time)=>{
+    const el=timelineScroll.current;if(!el)return;
+    el.scrollLeft=at/duration*el.scrollWidth-el.clientWidth/2;updateTimelineWindow();
+  };
+  const setZoom=(value:number)=>{
+    const el=timelineScroll.current;
+    if(el){
+      const playhead=time/duration*el.scrollWidth-el.scrollLeft;
+      const offset=playhead>=0&&playhead<=el.clientWidth?playhead:el.clientWidth/2;
+      zoomAnchor.current={fraction:(el.scrollLeft+offset)/el.scrollWidth,offset};
+    }
+    setWorkspace({...workspace,zoom:Math.max(1,Math.min(20,value))});
+  };
+  const timelineGestures=useTimelineGestures({enabled:mobile,scroll:timelineScroll,zoom,onNavigate:()=>{followSuspendedUntil.current=performance.now()+1500;},onZoom:(value,anchor)=>{zoomAnchor.current=anchor;setWorkspace({...workspace,zoom:value});}});
+  useLayoutEffect(()=>{
+    const el=timelineScroll.current,anchor=zoomAnchor.current;
+    if(el&&anchor){el.scrollLeft=zoom===1?0:anchor.fraction*el.scrollWidth-anchor.offset;zoomAnchor.current=undefined;}
+    else if(el&&!timelineInitialized.current&&mobile)centerPlayhead();
+    timelineInitialized.current=true;
+    updateTimelineWindow();
+  },[zoom]);
+  useEffect(()=>{
+    const query=window.matchMedia(compactEditorQuery);
+    const resize=()=>{setMobile(query.matches);setPanelOpen(!query.matches);setTimelineOptions(false);};
+    query.addEventListener('change',resize);
+    const observer=new ResizeObserver(updateTimelineWindow);if(timelineScroll.current)observer.observe(timelineScroll.current);
+    return()=>{query.removeEventListener('change',resize);observer.disconnect();cancelAnimationFrame(timelineWindowFrame.current);};
+  },[]);
   const setSnap=(value:boolean)=>setWorkspace({...workspace,snap:value});
   const selectedOverlay=workspace.selectedOverlay!==undefined&&workspace.selectedOverlay<recipe.overlays.length?workspace.selectedOverlay:undefined;
   const selectOverlay=(index:number)=>{setWorkspace({...workspace,selectedOverlay:index,tool:'Overlay'});setPanelOpen(true);};
@@ -75,39 +125,33 @@ export function CutWorkspace({viewerActions,exportSummary,tool,setTool,playbackO
     }).catch(error=>{if(!controller.signal.aborted)setFrameImage({key,phase:'error',message:error instanceof Error?error.message:'Could not load this source frame. Try again.'});});
     return()=>{controller.abort();if(url)URL.revokeObjectURL(url);};
   },[sourceId,previewId,inspectFrame,frameAttempt]);
-  const [panelOpen,setPanelOpen]=useState(true),[trimDrag,setTrimDrag]=useState<{index:number;edge:'in'|'out';value:number}>();
-  const [panelRevealRevision,setPanelRevealRevision]=useState(0);
+  const [panelOpen,setPanelOpen]=useState(()=>!window.matchMedia(compactEditorQuery).matches),[trimDrag,setTrimDrag]=useState<{index:number;edge:'in'|'out';value:number}>();
   const [cropView,setCropView]=useState(true);
-  const editingCrop=tool==='Transform'&&!!recipe.crop&&cropView;
+  const editingCrop=tool==='Transform'&&!!recipe.crop&&cropView&&(!mobile||panelOpen);
   useEffect(()=>{if(recipe.crop)setCropView(true);},[!!recipe.crop]);
   useEffect(()=>{if(recipe.resize)setCropView(false);},[recipe.resize]);
-  const toolRail=useRef<HTMLElement>(null),contextPanel=useRef<HTMLDivElement>(null),revealFrame=useRef(0);
-  const openTool=(value:string)=>{setTool(value);setPanelOpen(true);};
+  const toolRail=useRef<HTMLElement>(null),contextPanel=useRef<HTMLDivElement>(null);
+  const openTool=(value:string)=>{setTool(value);setPanelOpen(true);setTimelineOptions(false);};
 
   const video=useRef<HTMLVideoElement>(null),position=useRef(time),generation=useRef(0),previewEnd=useRef<number|undefined>(undefined),expectedSeek=useRef<number|undefined>(undefined);
   const activateRailTool=(value:string)=>{
     openTool(value);
-    if(window.matchMedia('(max-width:850px)').matches){
-      toolRail.current?.querySelector('details')?.removeAttribute('open');
-      setPanelRevealRevision(revision=>revision+1);
-    }
   };
   const closePanel=()=>{
     setPanelOpen(false);
     const selected=Array.from(toolRail.current?.querySelectorAll<HTMLButtonElement>('button[aria-pressed="true"]')||[]).find(button=>button.offsetWidth>0&&button.offsetHeight>0);
     const focusTarget=selected||toolRail.current?.querySelector<HTMLElement>('.more-editor-tools>summary');
     focusTarget?.focus({preventScroll:true});
-    if(window.matchMedia('(max-width:850px)').matches){
-      cancelAnimationFrame(revealFrame.current);
-      revealFrame.current=requestAnimationFrame(()=>video.current?.closest('.cut-player')?.scrollIntoView({block:'start',behavior:'auto'}));
-    }
   };
   useEffect(()=>{
-    if(!panelRevealRevision||!window.matchMedia('(max-width:850px)').matches)return;
-    revealFrame.current=requestAnimationFrame(()=>(tool==='Transform'?video.current?.closest('.cut-player'):contextPanel.current)?.scrollIntoView({block:'start',behavior:'auto'}));
-    return()=>cancelAnimationFrame(revealFrame.current);
-  },[panelRevealRevision]);
-  useEffect(()=>()=>cancelAnimationFrame(revealFrame.current),[]);
+    if(mobile&&panelOpen)contextPanel.current?.scrollTo(0,0);
+  },[mobile,panelOpen,tool]);
+  useEffect(()=>{
+    if(!mobile||!playing||performance.now()<followSuspendedUntil.current)return;
+    const el=timelineScroll.current;if(!el)return;
+    const x=time/duration*el.scrollWidth;
+    if(x<el.scrollLeft||x>el.scrollLeft+el.clientWidth-12)centerPlayhead();
+  },[time,playing,mobile]);
   const cache=useRef(new Map<number,{pts:number;keyframe:boolean}[]>());
   const active=Math.min(selected,recipe.segments.length-1),region=recipe.segments[active];
   const displayedRegion=trimDrag?.index===active?{...region,[trimDrag.edge]:trimDrag.value}:region;
@@ -175,6 +219,24 @@ export function CutWorkspace({viewerActions,exportSummary,tool,setTool,playbackO
     target=Math.max(0,Math.min(sourceEnd,target));
     setElementTime(target);
     reportTime(target);setInspectFrame(exact?target:undefined);
+  };
+  // Local pointer feedback must not toggle the app-wide busy state on every move.
+  const scrub=(at:number)=>{void seek(at).catch(error=>setError(error instanceof Error?error.message:'Could not seek the preview.'));};
+  const scrubCleanup=useRef<(()=>void)|undefined>(undefined);
+  useEffect(()=>()=>scrubCleanup.current?.(),[]);
+  const beginScrub=(event:React.PointerEvent<HTMLElement>,overview=false)=>{
+    if(!mobile||event.button!==0)return;
+    event.preventDefault();event.stopPropagation();scrubCleanup.current?.();
+    const target=event.currentTarget,rect=target.getBoundingClientRect(),id=event.pointerId;
+    let frame=0,pending=0;
+    const apply=()=>{frame=0;scrub(pending);if(overview)centerPlayhead(pending);};
+    const position=(x:number)=>{pending=Math.max(0,Math.min(duration,(x-rect.left)/rect.width*duration));if(!frame)frame=requestAnimationFrame(apply);};
+    target.setPointerCapture(id);position(event.clientX);
+    const move=(pointer:PointerEvent)=>{if(pointer.pointerId===id)position(pointer.clientX);};
+    const cleanup=()=>{cancelAnimationFrame(frame);target.removeEventListener('pointermove',move);target.removeEventListener('pointerup',up);target.removeEventListener('pointercancel',cancel);target.removeEventListener('lostpointercapture',cancel);if(target.hasPointerCapture(id))target.releasePointerCapture(id);scrubCleanup.current=undefined;};
+    const up=(pointer:PointerEvent)=>{if(pointer.pointerId!==id)return;position(pointer.clientX);cleanup();apply();};
+    const cancel=(pointer:PointerEvent)=>{if(pointer.pointerId===id)cleanup();};
+    scrubCleanup.current=cleanup;target.addEventListener('pointermove',move);target.addEventListener('pointerup',up);target.addEventListener('pointercancel',cancel);target.addEventListener('lostpointercapture',cancel);
   };
   // Preview audio: apply the recipe's volume, fades and removal through Web Audio so the preview matches the export.
   const audioGraph=useRef<{ctx:AudioContext;gain:GainNode}|undefined>(undefined);
@@ -271,10 +333,11 @@ export function CutWorkspace({viewerActions,exportSummary,tool,setTool,playbackO
   };
   const history=(action:()=>void)=>{generation.current++;pause();setError('');action();};
   const split=()=>{
-    const at=cursor();if(at<=region.in||at>=region.out)return;
+    const at=cursor(),target=mobile?recipe.segments.findIndex(s=>at>s.in&&at<s.out):active;
+    if(target<0||at<=recipe.segments[target].in||at>=recipe.segments[target].out)return;
     generation.current++;pause();reportTime(at);setError('');
-    change({...recipe,segments:recipe.segments.flatMap((s,i)=>i===active?[{...s,out:at},{...s,in:at}]:[s])});
-    setMessage(`Region ${active+1} split at ${stamp(at)}.`);
+    setSelected(target);change({...recipe,segments:recipe.segments.flatMap((s,i)=>i===target?[{...s,out:at},{...s,in:at}]:[s])});
+    setMessage(`Region ${target+1} split at ${stamp(at)}.`);
   };
   const commitTrim=(index:number,edge:'in'|'out',value:number)=>{
     const segment=recipe.segments[index];
@@ -286,17 +349,19 @@ export function CutWorkspace({viewerActions,exportSummary,tool,setTool,playbackO
   };
   const beginTrim=(event:React.PointerEvent<HTMLButtonElement>,index:number,edge:'in'|'out')=>{
     if(event.button!==0)return;
-    event.preventDefault();event.stopPropagation();select(index);openTool('Cut');
-    const target=event.currentTarget,rect=target.closest('.timeline-media')!.getBoundingClientRect(),segment=recipe.segments[index];
+    const originalTime=cursor();
+    event.preventDefault();event.stopPropagation();select(index);setTool('Cut');if(!mobile)setPanelOpen(true);
+    const target=event.currentTarget,media=target.closest('.timeline-media')!,segment=recipe.segments[index],startX=event.clientX,startScroll=timelineScroll.current?.scrollLeft||0;
     let value=segment[edge];target.setPointerCapture(event.pointerId);
     const move=(pointer:PointerEvent)=>{
-      const at=Math.round((pointer.clientX-rect.left)/rect.width*duration*1000)/1000;
+      const delta=pointer.clientX-startX+(timelineScroll.current?.scrollLeft||0)-startScroll;
+      const at=Math.round((segment[edge]+delta/media.getBoundingClientRect().width*duration)*1000)/1000;
       value=edge==='in'?Math.max(0,Math.min(segment.out-.001,at)):Math.min(duration,Math.max(segment.in+.001,at));
       setTrimDrag({index,edge,value});setElementTime(value);reportTime(value);
     };
     const clean=()=>{target.removeEventListener('pointermove',move);target.removeEventListener('pointerup',finish);target.removeEventListener('pointercancel',cancel);setTrimDrag(undefined);};
     const finish=()=>{clean();commitTrim(index,edge,value);};
-    const cancel=()=>clean();
+    const cancel=()=>{clean();setElementTime(originalTime);reportTime(originalTime);};
     target.addEventListener('pointermove',move);target.addEventListener('pointerup',finish);target.addEventListener('pointercancel',cancel);
   };
   const trimValue=(edge:'in'|'out',value:number)=>edge==='in'?Math.max(0,Math.min(region.out-.001,value)):Math.min(duration,Math.max(region.in+.001,value));
@@ -360,7 +425,9 @@ export function CutWorkspace({viewerActions,exportSummary,tool,setTool,playbackO
     return gaps.filter(g=>g.to-g.from>1e-6);
   })();
   const excludedLayer=<div className="excluded-layer" aria-hidden="true">{excluded.map((g,i)=><i key={i} data-testid="excluded-range" style={{left:`${g.from/duration*100}%`,width:`${(g.to-g.from)/duration*100}%`}}/>)}</div>;
-  const rulerDivisions=Math.min(8,Math.max(2,Math.ceil(duration/5)));
+  const rulerDivisions=mobile?Math.max(2,Math.min(200,Math.floor((timelineWindow.width||300)*zoom/85))):Math.min(8,Math.max(2,Math.ceil(duration/5)));
+  const shortSelection=mobile&&(region.out-region.in)/duration*(timelineWindow.width||300)*zoom<88;
+  const waveform=useMemo(()=><svg className="waveform" viewBox={`0 0 ${wave.length} 100`} preserveAspectRatio="none" aria-label="Audio waveform">{wave.map((v,i)=>{const level=Math.abs(v)/wavePeak*(recipe.audio.mode==='mute'?1:audioGain(i/wave.length*duration)),amp=Math.min(1,level)*40;return <line key={i} className={level>1.001?'clip':undefined} x1={i} x2={i} y1={50-amp} y2={50+amp}/>;})}</svg>,[wave,wavePeak,recipe.audio,recipe.segments,duration]);
   // Keyboard shortcuts work from anywhere in the editor, not only when focus is inside the workspace.
   const shortcutGroups:[string,[string,string][]][]=[
     ['Playback',[['Space','Play / pause'],['K','Pause'],['L','Play forward (press again for 2×, 4×, 8×)'],['J','Play backward (press again to go faster)']]],
@@ -374,6 +441,12 @@ export function CutWorkspace({viewerActions,exportSummary,tool,setTool,playbackO
     if(!target||e.defaultPrevented||menu)return;
     const editable=!!target.closest('input:not(.scrubber),textarea,select,[contenteditable="true"]');
     if(e.key==='Escape'&&helpOpen){e.preventDefault();setHelpOpen(false);return;}
+    if(e.key==='Escape'&&mobile&&!document.querySelector('dialog[open]')){
+      const precision=document.querySelector<HTMLDetailsElement>('.cut-precision[open]');
+      if(precision){e.preventDefault();precision.open=false;return;}
+      if(timelineOptions){e.preventDefault();setTimelineOptions(false);return;}
+      if(panelOpen){e.preventDefault();closePanel();return;}
+    }
     if(editable||document.querySelector('dialog[open],[role=dialog]:not(.shortcuts-overlay)'))return;
     const key=e.key.length===1?e.key.toLowerCase():e.key;
     if(e.ctrlKey||e.metaKey){
@@ -430,12 +503,12 @@ export function CutWorkspace({viewerActions,exportSummary,tool,setTool,playbackO
     }
   };
   useEffect(()=>{const handler=(event:KeyboardEvent)=>onKey.current(event);window.addEventListener('keydown',handler);return()=>window.removeEventListener('keydown',handler);},[]);
-  return <div className={`cut-workspace tool-${tool.toLowerCase()}${panelOpen?' is-panel-open':''}`}>
+  return <div className={`cut-workspace tool-${tool.toLowerCase()}${panelOpen?' is-panel-open':''}${recipe.caption?.text?' has-caption':''}${recipe.overlays.length?' has-overlays':''}${shortSelection?' has-short-selection':''}`}>
     <div className="cut-layout">
       <nav ref={toolRail} className="editor-tool-rail" aria-label="Editing tools">
-        {tools.map(([value,icon,tone])=><button key={value} className={`tool-${tone}`} title={value} aria-label={value} aria-pressed={tool===value} onClick={()=>activateRailTool(value)}><EditorIcon name={icon} tone={tone}/><span>{value}</span></button>)}
+        {tools.map(([value,icon,tone])=><button key={value} className={`tool-${tone}`} title={value} aria-label={value} aria-pressed={tool===value} aria-expanded={mobile?panelOpen&&tool===value:undefined} aria-controls={mobile?'editor-tool-panel':undefined} onClick={()=>mobile&&panelOpen&&tool===value?closePanel():activateRailTool(value)}><EditorIcon name={icon} tone={tone}/><span>{value}</span></button>)}
       </nav>
-      <div ref={contextPanel} className="editor-context-panel"><div className={`context-panel-heading tool-${toolTone(tool)}`}><EditorIcon name={toolIcon(tool)} size={17} tone={toolTone(tool)}/><span>{tool==='Cut'?`Trim section ${active+1}`:tool==='Source'?'Media':tool}</span><button className="context-panel-close" onClick={closePanel}>Done</button></div>
+      <div ref={contextPanel} id="editor-tool-panel" className="editor-context-panel" role="region" aria-label={`${tool} settings`}><div className={`context-panel-heading tool-${toolTone(tool)}`}><EditorIcon name={toolIcon(tool)} size={17} tone={toolTone(tool)}/><span>{tool==='Cut'?`Trim section ${active+1}`:tool==='Source'?'Media':tool}</span><button className="context-panel-close" onClick={closePanel}>Done</button></div>
         {inspector||<aside className="region-sidebar" aria-label="Kept regions">
           <div className="region-heading"><h3>Sections</h3><span>{recipe.segments.length}</span></div>
           <div className="region-list">{recipe.segments.map((s,i)=><button key={i} className="region-choice" aria-label={`Select region ${i+1}`} aria-pressed={active===i} onClick={()=>{select(i);openTool('Cut');}}><strong>Section {i+1}</strong><span>{stamp(s.in)} to {stamp(s.out)}</span><small>{(s.out-s.in).toFixed(2)} s</small></button>)}</div>
@@ -456,10 +529,10 @@ export function CutWorkspace({viewerActions,exportSummary,tool,setTool,playbackO
       </div>
       <div className="cut-player"><div className="source-heading"><h1 aria-label={`Editor · ${sourceName}`}><EditorIcon name="video" size={17} tone="video"/>{sourceName}</h1><span>{mediaWidth} × {mediaHeight}{frameRate?` · ${Math.round(frameRate.split('/').reduce((a,n,i)=>i?a/Number(n):Number(n),0)*100)/100} fps`:''}</span></div>
         <div className="preview-heading" data-state={editingCrop?'crop':recipe.crop||recipe.resize||recipe.rotate||recipe.caption?.text.trim()||recipe.overlays.length?'live':'original'}><strong>{editingCrop?'Crop preview':recipe.crop||recipe.resize||recipe.rotate||recipe.caption?.text.trim()||recipe.overlays.length?'Live preview':'Original preview'}</strong><span>{stamp(time)} / {stamp(duration)}</span></div>
-        {tool==='Transform'&&<ViewportTransformControls recipe={recipe} change={change} width={mediaWidth} height={mediaHeight} sourceRotation={mediaRotation} editingCrop={editingCrop} setEditingCrop={setCropView}/>}
-        <div className="cut-preview" onClick={()=>openTool('Transform')}>
-          <TransformViewport recipe={recipe} change={change} width={mediaWidth} height={mediaHeight} sourceRotation={mediaRotation} active={tool==='Transform'} editingCrop={editingCrop} fit={fit} pictureLayer={recipe.overlays.length>0&&<OverlayLayer overlays={recipe.overlays} time={time} selected={selectedOverlay} editing={tool==='Overlay'} select={selectOverlay} commit={updateOverlay}/>}>
-          <video ref={video} muted={muted} src={contentUrl(previewId)} preload="metadata" aria-label="Source playback"
+        {tool==='Transform'&&(!mobile||panelOpen)&&<ViewportTransformControls recipe={recipe} change={change} width={mediaWidth} height={mediaHeight} sourceRotation={mediaRotation} editingCrop={editingCrop} setEditingCrop={setCropView}/>}
+        <div className="cut-preview" onClick={()=>{if(!mobile)openTool('Transform');}}>
+          <TransformViewport recipe={recipe} change={change} width={mediaWidth} height={mediaHeight} sourceRotation={mediaRotation} active={tool==='Transform'&&(!mobile||panelOpen)} editingCrop={editingCrop} fit={fit} pictureLayer={recipe.overlays.length>0&&<OverlayLayer overlays={recipe.overlays} time={time} selected={selectedOverlay} editing={tool==='Overlay'&&(!mobile||panelOpen)} select={selectOverlay} commit={updateOverlay}/>}>
+          <video ref={video} playsInline muted={muted} src={contentUrl(previewId)} preload="metadata" aria-label="Source playback"
             onLoadedMetadata={()=>{setElementTime(Math.max(0,Math.min(duration,position.current)));setReady(true);}}
             onLoadedData={()=>setError('')}
             onPlay={()=>{generation.current++;setPlaying(true);setInspectFrame(undefined);}}
@@ -488,6 +561,30 @@ export function CutWorkspace({viewerActions,exportSummary,tool,setTool,playbackO
       </div>
       <aside className="editor-export-summary" aria-label="Export summary">{exportSummary}</aside>
     </div>
+    <div className="mobile-timeline-actions" role="group" aria-label="Mobile timeline controls">
+      <button aria-label="Undo" title="Undo" disabled={!canUndo} onClick={()=>history(undo)}><EditorIcon name="undo" size={20}/></button>
+      <button className="mobile-split" disabled={!recipe.segments.some(s=>time>s.in&&time<s.out)} onClick={split}><EditorIcon name="split" size={18}/><span>Split</span></button>
+      <button aria-label="More timeline actions" aria-expanded={timelineOptions} aria-controls="mobile-timeline-options" onClick={()=>{setTimelineOptions(!timelineOptions);setPanelOpen(false);}}><EditorIcon name="more" size={20}/></button>
+      <span className="mobile-zoom-divider"/>
+      <button aria-label="Zoom out" title="Zoom out" disabled={zoom<=1} onClick={()=>setZoom(zoom-1)}><EditorIcon name="zoom-out" size={18}/></button>
+      <button aria-label="Zoom in" title="Zoom in" disabled={zoom>=20} onClick={()=>setZoom(zoom+1)}><EditorIcon name="zoom-in" size={18}/></button>
+      <button title="Fit timeline to width" onClick={()=>setZoom(1)}>Fit</button>
+    </div>
+    {mobile&&timelineOptions&&<section id="mobile-timeline-options" className="mobile-timeline-options" aria-label="More timeline actions">
+      <div className="context-panel-heading"><strong>Timeline options</strong><button onClick={()=>setTimelineOptions(false)}>Done</button></div>
+      <div className="mobile-timeline-option-grid">
+        <button disabled={!canRedo} onClick={()=>history(redo)}><EditorIcon name="redo" size={18}/>Redo</button>
+        <button aria-pressed={snap} onClick={()=>setSnap(!snap)}><EditorIcon name="snap" size={18}/>Snap to frames</button>
+        <button onClick={()=>{openTool('Cut');}}>Edit sections</button>
+        <button disabled={recipe.segments.length===1} onClick={remove}>Remove section</button>
+        <button aria-label={previewing?'Stop source region':'Play source region'} disabled={!ready} onClick={()=>{setTimelineOptions(false);void run(previewing?async()=>pause():playRegion);}}>Play section</button>
+        <button onClick={()=>{setTimelineOptions(false);centerPlayhead();}}>Show playhead</button>
+        <button onClick={()=>{scrub(region.in);centerPlayhead(region.in);}}>Go to start</button>
+        <button onClick={()=>{scrub(region.out);centerPlayhead(region.out);}}>Go to end</button>
+      </div>
+      <label className="mobile-position">Playhead (s)<BoundaryInput label="Playhead (s)" value={time} seconds commit={value=>{if(!Number.isFinite(value)||value<0||value>duration)return false;scrub(value);centerPlayhead(value);return true;}}/></label>
+    </section>}
+    <div className="mobile-timeline-hint"><strong>Timeline <span>{Number(zoom.toFixed(1))}×</span></strong><span>{zoom>1?'Swipe to move · pinch to zoom':'Drag ruler to seek · zoom for detail'}</span></div>
     <div className="compact-timeline-toolbar" role="group" aria-label="Timeline controls">
       <div className="timeline-tool-group history-tools">
         <button aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)" aria-pressed={helpOpen} onClick={()=>setHelpOpen(!helpOpen)}><EditorIcon name="keyboard"/><span>Keys</span></button>
@@ -519,20 +616,33 @@ export function CutWorkspace({viewerActions,exportSummary,tool,setTool,playbackO
     </div>}
     <div className="context-timeline" aria-label="Editing timeline">
       <div className="track-labels"><div className="track-ruler-label"><button aria-label="Timeline controls" title="Timeline controls" onClick={()=>openTool('Cut')}><EditorIcon name="more"/></button></div><button className="track-text" onClick={()=>{openTool('Text')}}><EditorIcon name="text" tone="text"/><span>Text</span></button><button className="track-overlay" onClick={()=>openTool('Overlay')}><EditorIcon name="image" tone="overlay"/><span>Overlay</span></button><button className="track-video" onClick={()=>openTool('Transform')}><EditorIcon name="video" tone="video"/><span>Video</span></button><button className="track-audio" onClick={()=>openTool('Audio')}><EditorIcon name="audio" tone="audio"/><span>Audio</span></button></div>
-      <div className="timeline-scroll"><div className="timeline" style={{width:`${zoom*100}%`}} onContextMenu={openMenu}>
-        <div className="timeline-ruler" onClick={e=>{const rect=e.currentTarget.getBoundingClientRect();void run(()=>seek((e.clientX-rect.left)/rect.width*duration));}}>{Array.from({length:rulerDivisions+1},(_,i)=>{const at=i/rulerDivisions*duration;return <span key={i} style={{left:`${at/duration*100}%`}}>{duration<10?`${at.toFixed(1)} s`:stamp(at).slice(duration>=3600?0:3,8)}</span>})}</div>
+      <div ref={timelineScroll} className="timeline-scroll" {...timelineGestures} onScroll={updateTimelineWindow}><div className="timeline" style={{width:`${zoom*100}%`}} onContextMenu={openMenu}>
+        <div className="timeline-ruler" role={mobile?'slider':undefined} tabIndex={mobile?0:undefined} aria-label={mobile?'Timeline playhead':undefined} aria-valuemin={mobile?0:undefined} aria-valuemax={mobile?duration:undefined} aria-valuenow={mobile?time:undefined} aria-valuetext={mobile?stamp(time):undefined} onPointerDown={event=>beginScrub(event)} onKeyDown={event=>{
+          if(!mobile||!['ArrowLeft','ArrowRight','ArrowDown','ArrowUp','Home','End','PageDown','PageUp'].includes(event.key))return;
+          event.preventDefault();event.stopPropagation();
+          if(event.key==='Home')scrub(0);else if(event.key==='End')scrub(sourceEnd);
+          else if(event.key==='PageDown'||event.key==='PageUp')scrub(time+(event.key==='PageUp'?1:-1)*5);
+          else stepFrames((event.key==='ArrowRight'||event.key==='ArrowUp'?1:-1)*(event.shiftKey?10:1));
+        }} onClick={e=>{if(mobile)return;const rect=e.currentTarget.getBoundingClientRect();void run(()=>seek((e.clientX-rect.left)/rect.width*duration));}}>{Array.from({length:rulerDivisions+1},(_,i)=>{const at=i/rulerDivisions*duration;return <span key={i} style={{left:`${at/duration*100}%`}}>{duration<10?`${at.toFixed(1)} s`:stamp(at).slice(duration>=3600?0:3,8)}</span>})}</div>
         <div className="timeline-media">
           <div className="text-track">{recipe.caption?.text?<button className="text-clip" aria-label="Edit video caption" style={{left:0,width:'100%'}} onClick={()=>openTool('Text')}><span>T</span>{recipe.caption.text}</button>:<button className="empty-text-track" onClick={()=>openTool('Text')}><EditorIcon name="plus" size={14}/>Add caption</button>}</div>
           <OverlayTrack overlays={recipe.overlays} duration={duration} selected={selectedOverlay} editing={tool==='Overlay'} select={selectOverlay} add={()=>{openTool('Overlay');requestAnimationFrame(()=>document.querySelector<HTMLInputElement>('input[aria-label="Choose overlay image"]')?.click());}} retime={(index,range)=>updateOverlay(index,range)} seek={at=>{generation.current++;pause();setInspectFrame(undefined);setElementTime(at);reportTime(at);}}/>
-          <div className="video-track" onClick={()=>openTool('Cut')}>{thumbnails}{excludedLayer}<div className="region-tracks" onClick={e=>e.stopPropagation()}>{recipe.segments.map((s,i)=>{
+          <div className="video-track" onClick={()=>{if(!mobile)openTool('Cut');}}>{thumbnails}{excludedLayer}<div className="region-tracks" onClick={e=>e.stopPropagation()}>{recipe.segments.map((s,i)=>{
             const segment=trimDrag?.index===i?{...s,[trimDrag.edge]:trimDrag.value}:s;
-            return <div className="region-lane" key={i}><div className={`timeline-region-wrapper${active===i?' is-selected':''}`} style={{left:`${segment.in/duration*100}%`,width:`${(segment.out-segment.in)/duration*100}%`}}><button className="timeline-region" aria-label={`Select timeline region ${i+1}`} aria-pressed={active===i} onClick={event=>{select(i);openTool('Cut');const rect=event.currentTarget.closest('.timeline-media')!.getBoundingClientRect();const at=Math.max(segment.in,Math.min(segment.out,(event.clientX-rect.left)/rect.width*duration));if(event.detail){setElementTime(at);reportTime(at);}}}><span className="timeline-section-number">{i+1}</span></button>{tool==='Cut'&&active===i&&(['in','out'] as const).map(edge=><button key={edge} className={`trim-handle trim-${edge}`} role="slider" aria-label={`Region ${i+1} ${edge==='in'?'start':'end'} trim handle`} aria-orientation="horizontal" aria-valuemin={edge==='in'?0:segment.in+.001} aria-valuemax={edge==='in'?segment.out-.001:duration} aria-valuenow={segment[edge]} aria-valuetext={stamp(segment[edge])} onPointerDown={e=>beginTrim(e,i,edge)} onKeyDown={e=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(e.key))return;e.preventDefault();e.stopPropagation();const step=e.shiftKey?.1:.01;const value=e.key==='Home'?(edge==='in'?0:segment.in+.001):e.key==='End'?(edge==='in'?segment.out-.001:duration):Math.max(edge==='in'?0:segment.in+.001,Math.min(edge==='in'?segment.out-.001:duration,segment[edge]+(e.key==='ArrowLeft'?-step:step)));commitTrim(i,edge,Math.round(value*1000)/1000);}}><span aria-hidden="true"/></button>)}</div></div>;
+            return <div className="region-lane" key={i}><div className={`timeline-region-wrapper${active===i?' is-selected':''}`} style={{left:`${segment.in/duration*100}%`,width:`${(segment.out-segment.in)/duration*100}%`}}><button className="timeline-region" aria-label={`Select timeline region ${i+1}`} aria-pressed={active===i} onClick={event=>{select(i);if(!mobile)openTool('Cut');const rect=event.currentTarget.closest('.timeline-media')!.getBoundingClientRect();const at=Math.max(segment.in,Math.min(segment.out,(event.clientX-rect.left)/rect.width*duration));if(event.detail){setElementTime(at);reportTime(at);}}}><span className="timeline-section-number">{i+1}</span></button>{tool==='Cut'&&active===i&&(['in','out'] as const).map(edge=><button key={edge} className={`trim-handle trim-${edge}`} style={shortSelection?{left:Math.min(0,(timelineWindow.width||300)*zoom*(1-segment.in/duration)-44),right:"auto"}:undefined} role="slider" aria-label={`Region ${i+1} ${edge==='in'?'start':'end'} trim handle`} aria-orientation="horizontal" aria-valuemin={edge==='in'?0:segment.in+.001} aria-valuemax={edge==='in'?segment.out-.001:duration} aria-valuenow={segment[edge]} aria-valuetext={stamp(segment[edge])} onPointerDown={e=>beginTrim(e,i,edge)} onKeyDown={e=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(e.key))return;e.preventDefault();e.stopPropagation();const step=e.shiftKey?.1:.01;const value=e.key==='Home'?(edge==='in'?0:segment.in+.001):e.key==='End'?(edge==='in'?segment.out-.001:duration):Math.max(edge==='in'?0:segment.in+.001,Math.min(edge==='in'?segment.out-.001:duration,segment[edge]+(e.key==='ArrowLeft'?-step:step)));commitTrim(i,edge,Math.round(value*1000)/1000);}}><span aria-hidden="true"/></button>)}</div></div>;
           })}</div></div>
-          <div className={`audio-track${recipe.audio.mode==='mute'?' is-removed':''}`} onClick={()=>openTool('Audio')}>{excludedLayer}{wave.length>0?<svg className="waveform" viewBox={`0 0 ${wave.length} 100`} preserveAspectRatio="none" aria-label="Audio waveform">{wave.map((v,i)=>{const level=Math.abs(v)/wavePeak*(recipe.audio.mode==='mute'?1:audioGain(i/wave.length*duration)),amp=Math.min(1,level)*40;return <line key={i} className={level>1.001?'clip':undefined} x1={i} x2={i} y1={50-amp} y2={50+amp}/>;})}</svg>:<span className={`waveform-empty${waveLoading?' is-loading':''}`}>{!hasAudio?'No audio in this source':recipe.audio.mode==='mute'?'Audio removed':waveLoading?'Analyzing audio…':'Waveform unavailable'}</span>}{wave.length>0&&recipe.audio.mode==='mute'&&<span className="waveform-badge">Audio removed</span>}{wave.length>0&&recipe.audio.mode==='replace'&&<span className="waveform-badge">Replaced by another source</span>}</div>
+          <div className={`audio-track${recipe.audio.mode==='mute'?' is-removed':''}`} onClick={()=>{if(!mobile)openTool('Audio');}}>{excludedLayer}{wave.length>0?waveform:<span className={`waveform-empty${waveLoading?' is-loading':''}`}>{!hasAudio?'No audio in this source':recipe.audio.mode==='mute'?'Audio removed':waveLoading?'Analyzing audio…':'Waveform unavailable'}</span>}{wave.length>0&&recipe.audio.mode==='mute'&&<span className="waveform-badge">Audio removed</span>}{wave.length>0&&recipe.audio.mode==='replace'&&<span className="waveform-badge">Replaced by another source</span>}</div>
           <div className="timeline-cursor" style={{left:`${time/duration*100}%`}} aria-hidden="true"/>
         </div>
         <input className="scrubber" aria-label="Timeline playhead" type="range" min={0} max={duration} step={.001} value={time} onChange={e=>{const value=Number(e.target.value);if(ctrlHeld.current){const px=e.currentTarget.getBoundingClientRect().width/duration;const near=[region.in,region.out].filter(edge=>Math.abs(edge-value)*px<=12).sort((a,b)=>Math.abs(a-value)-Math.abs(b-value))[0];if(near!==undefined){void run(()=>seek(near,true));return;}}void run(()=>seek(value));}}/>
       </div></div>
+    </div>
+    <div className="mobile-timeline-overview">
+      <div className="timeline-overview-range" onPointerDown={event=>beginScrub(event,true)} style={{'--view-start':`${timelineWindow.start*100}%`,'--view-end':`${timelineWindow.end*100}%`} as React.CSSProperties}>
+        <span className="timeline-overview-window" aria-hidden="true"/>
+        <input type="range" aria-label="Navigate full video" aria-valuetext={stamp(time)} min={0} max={duration} step={.001} value={time} onChange={e=>{const value=Number(e.target.value);scrub(value);centerPlayhead(value);}}/>
+      </div>
+      <button aria-label="Show playhead" title="Show playhead in timeline" onClick={()=>centerPlayhead()}><EditorIcon name="play" size={16}/></button>
     </div>
     <div className="compact-timeline-status"><span>{recipe.segments.length} kept {recipe.segments.length===1?'section':'sections'} <b>·</b> {totalKept.toFixed(3)} s</span><span role="status">{message}</span><span>From {stamp(duration)}</span></div>
     {error&&<p role="alert" className="error">{error}</p>}

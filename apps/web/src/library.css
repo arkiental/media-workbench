@@ -80,7 +80,7 @@
 .bulk-delete-dialog[open]{animation:import-reveal .12s ease-out}
 @keyframes import-reveal{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
 @media(max-width:1050px){.activity-details{margin-left:160px}}
-@media(max-width:600px){.activity-details{margin-left:0}.library-status{gap:4px}.library-status button{font-size:12px;padding:8px}.import-page .page-heading{align-items:flex-start}.import-page .page-heading p{max-width:230px}.import-page .page-heading button{font-size:12px}.import-body .dropzone{min-height:250px}.mobile-navigation{grid-template-columns:repeat(2,1fr)}.shell-actions .import-trigger{display:inline-flex!important}}
+@media(max-width:600px){.activity-details{margin-left:0}.library-status{gap:4px}.library-status button{font-size:12px;padding:8px}.import-page .page-heading{align-items:flex-start}.import-page .page-heading p{max-width:230px}.import-page .page-heading button{font-size:12px}.import-body .dropzone{min-height:250px}.mobile-navigation{grid-template-columns:repeat(2,1fr)}.app-shell:not(.editing-shell) .shell-actions .import-trigger{display:inline-flex}}
 @media(prefers-reduced-motion:reduce){.unified-library .media-card,.import-body .dropzone{transition:none}.bulk-delete-dialog[open]{animation:none}}
 
 .unified-library .media-list .activity-card>.activity-details{display:block;width:auto;max-width:none;margin:6px 0 0 180px;padding:0;border:0}

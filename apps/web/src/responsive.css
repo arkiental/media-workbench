@@ -979,18 +979,6 @@ summary:active {
   }
 }
 
-@media (max-width: 850px) and (max-height: 500px) and (orientation: landscape) {
-  .editing-shell .cut-player:not(:fullscreen) .cut-preview {
-    height: clamp(80px, calc(100dvh - var(--mobile-navigation-height) - var(--mobile-editor-rail-height) - 152px), 210px);
-    aspect-ratio: auto;
-  }
-
-  .editing-shell .cut-player:not(:fullscreen) .cut-preview video {
-    min-height: 0;
-    object-fit: contain;
-  }
-}
-
 @media (max-width: 480px) {
   .editing-shell .app-header {
     gap: 8px;

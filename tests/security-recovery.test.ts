@@ -18,7 +18,23 @@ test('real forced service crash retains an interrupted job and first retry repla
     const port=await new Promise<number>((resolve,reject)=>{let output='';const timeout=setTimeout(()=>reject(Error('Service boot timeout '+stderr)),45000);child.once('error',reject);child.once('exit',code=>{clearTimeout(timeout);reject(Error(`Service boot exit ${code}: ${stderr}`));});child.stdout.on('data',b=>{output+=b;for(const line of output.split('\n')){try{const ready=JSON.parse(line);if(ready.event==='ready'){clearTimeout(timeout);resolve(ready.port);}}catch{}}});});
     const origin=`http://127.0.0.1:${port}`;
     const request=async(route:string,init:RequestInit={})=>{const response=await fetch(origin+route,{...init,headers:{authorization:`Bearer ${token}`,...init.headers}});return {status:response.status,value:await response.json()};};
-    const stop=async()=>{if(child.exitCode!==null)return;if(process.platform==='win32')await runProcess('taskkill.exe',['/PID',String(child.pid),'/T','/F']);else process.kill(-child.pid!,'SIGKILL');await new Promise<void>(r=>{if(child.exitCode!==null)r();else child.once('exit',()=>r());});};
+    const stop=async()=>{
+      if(child.exitCode!==null||child.signalCode!==null)return;
+      if(process.platform==='win32'){
+        // taskkill can report 128 when a descendant exits during tree traversal.
+        // Accept that race only after every process from the captured tree is gone.
+        const listing=await runProcess('powershell.exe',['-NoProfile','-NonInteractive','-Command','Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress']);
+        const processes=JSON.parse(listing.stdout.toString()) as {ProcessId:number;ParentProcessId:number}[],owned=new Set([child.pid!]);
+        for(let changed=true;changed;){changed=false;for(const process of processes)if(owned.has(process.ParentProcessId)&&!owned.has(process.ProcessId)){owned.add(process.ProcessId);changed=true;}}
+        let killError:unknown;try{await runProcess('taskkill.exe',['/PID',String(child.pid),'/T','/F']);}catch(error){killError=error;}
+        const alive=()=>[...owned].filter(pid=>{try{process.kill(pid,0);return true;}catch(error){if((error as NodeJS.ErrnoException).code==='ESRCH')return false;throw error;}});
+        for(let attempt=0;attempt<100&&alive().length;attempt++)await pause(50);
+        assert.deepEqual(alive(),[],`Owned process tree survived forced termination: ${String(killError)}`);
+      }else{
+        process.kill(-child.pid!,'SIGKILL');
+        await new Promise<void>(resolve=>{if(child.exitCode!==null||child.signalCode!==null)resolve();else child.once('exit',()=>resolve());});
+      }
+    };
     return{child,origin,request,stop};
   }
   let server=await boot();

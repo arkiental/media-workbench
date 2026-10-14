@@ -229,49 +229,6 @@
     grid-row: auto;
   }
 
-  .editing-shell .editor-context-panel {
-    order: 2;
-  }
-
-  .editing-shell .compact-timeline-toolbar {
-    order: 3;
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    gap: 8px;
-  }
-
-  .compact-timeline-toolbar .timeline-tool-group {
-    gap: 4px;
-    flex-wrap: nowrap;
-  }
-
-  .compact-timeline-toolbar .timeline-zoom {
-    grid-column: 1 / -1;
-    order: 0;
-    margin: 0;
-    justify-content: flex-end;
-  }
-
-  .compact-timeline-toolbar .timeline-zoom > span {
-    display: inline;
-    margin-right: auto;
-  }
-
-  .compact-timeline-toolbar .timeline-zoom input {
-    display: block;
-    flex: 1;
-    max-width: 180px;
-    min-width: 44px;
-  }
-
-  .editing-shell .context-timeline {
-    order: 4;
-  }
-
-  .editing-shell .trim-handle {
-    width: 44px;
-  }
-
   .jobs-toolbar .filter-buttons {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));

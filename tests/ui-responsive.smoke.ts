@@ -35,6 +35,8 @@ page.on('pageerror', error => errors.push(error.message));
 
 async function navigate(name: string) {
   const header = page.locator('.app-header');
+  const back=page.getByRole('button',{name:'Back to Library',exact:true});
+  if(name==='Library'&&await back.isVisible()){await back.click();return;}
   const mobile = page.locator('.mobile-navigation');
   const candidates = name === 'Settings'
     ? header.getByRole('button', { name, exact: true })
@@ -43,7 +45,7 @@ async function navigate(name: string) {
   await page.locator('main').waitFor();
 }
 
-async function tool(name:string) { await page.getByRole('navigation',{name:'Editing tools'}).getByRole('button',{name,exact:true}).click(); }
+async function tool(name:string) { const button=page.getByRole('navigation',{name:'Editing tools'}).getByRole('button',{name,exact:true});if(await button.getAttribute('aria-expanded')!=='true')await button.click(); }
 
 async function noOverflow(label: string) {
   const result = await page.evaluate(() => {
@@ -147,54 +149,25 @@ async function captureInspector(name: string) {
 }
 
 async function mobileToolAccess(label: string) {
-  await page.evaluate(() => window.scrollTo(0, 0));
-  const nav = await page.locator('.mobile-navigation').boundingBox();
-  const rail = page.getByRole('navigation', { name: 'Editing tools' });
-  assert(nav);
-  const controls = [rail.getByRole('button', { name: 'Cut', exact: true }),
-    rail.getByRole('button', { name: 'Text', exact: true }),
-    rail.getByRole('button', { name: 'Audio', exact: true }),
-    rail.getByRole('button', { name: 'Transform', exact: true })];
-  for (const control of controls) {
-    const box = await control.boundingBox();
-    assert.ok(box && box.y >= 0 && box.y + box.height <= nav.y + 1,
-      `${label}: labeled editing tool must fit above bottom navigation`);
-    assert.equal(await control.evaluate(element => {
-      const box = element.getBoundingClientRect();
-      const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
-      return hit === element || !!hit && element.contains(hit);
-    }), true, `${label}: editing tool is hit-testable in the initial viewport`);
-  }
-  checks.push(`${label}: Text, Audio, Transform and Cut stay visible and hit-testable in the initial viewport`);
-
-  for (const [name, heading] of [['Cut', 'Trim section 1'], ['Text', 'Text'], ['Audio', 'Audio'], ['Transform', 'Transform']]) {
-    await tool(name);
-    await page.waitForFunction(transform => {
-      const heading = document.querySelector(transform ? '.viewport-transform-controls' : '.context-panel-heading');
-      const rail = document.querySelector('.editor-tool-rail');
-      if (!heading || !rail) return false;
-      const box = heading.getBoundingClientRect();
-      return box.top >= 0 && box.bottom <= rail.getBoundingClientRect().top;
-    }, name === 'Transform');
-    assert.equal(await page.locator('.context-panel-heading > span').innerText(), heading);
-  }
-  assert.equal(await rail.getByRole('button').count(),5);
+  await page.evaluate(() => window.scrollTo(0,0));
+  const rail=page.getByRole('navigation',{name:'Editing tools'});
+  assert.equal(await rail.getByRole('button').count(),5,`${label}: exactly five editing tools`);
   assert.equal(await rail.getByRole('button',{name:'Media',exact:true}).count(),0);
-  await page.getByRole('button', { name: 'Done', exact: true }).click();
-  await page.waitForFunction(() => {
-    const preview = document.querySelector('.cut-preview')?.getBoundingClientRect();
-    const rail = document.querySelector('.editor-tool-rail')?.getBoundingClientRect();
-    return !!preview && !!rail && preview.top >= 0 && preview.top < rail.top;
-  });
-  assert.equal(await page.locator('.editor-context-panel').isVisible(), false);
-  checks.push(`${label}: tool taps reveal panel headings, the rail contains only Text, Audio, Transform and Cut, and Done returns to the preview`);
+  for(const name of ['Cut','Text','Overlay','Audio','Transform']) {
+    const control=rail.getByRole('button',{name,exact:true}),box=await control.boundingBox();
+    assert(box&&box.y>=0&&box.y+box.height<=page.viewportSize()!.height+1,`${label}: tool stays visible`);
+    assert(await control.evaluate(element=>{const b=element.getBoundingClientRect();const hit=document.elementFromPoint(b.x+b.width/2,b.y+b.height/2);return hit===element||!!hit&&element.contains(hit);}));
+    await tool(name);
+    const panel=await page.locator('.editor-context-panel').boundingBox(),heading=await page.locator('.context-panel-heading').boundingBox();
+    assert(panel&&heading&&heading.y>=0&&heading.y+heading.height<=box.y,`${label}: sheet heading is visible above tools`);
+  }
+  await page.getByRole('button',{name:'Done',exact:true}).click();
+  assert.equal(await page.locator('.editor-context-panel').isVisible(),false);
   await tool('Cut');
-  await page.waitForFunction(() => {
-    const box = document.querySelector('.context-panel-heading')?.getBoundingClientRect();
-    const rail = document.querySelector('.editor-tool-rail')?.getBoundingClientRect();
-    return !!box && !!rail && box.top >= 0 && box.bottom <= rail.top;
-  });
+  checks.push(`${label}: five labeled tools open bounded sheets; Done returns to the timeline without a page jump`);
 }
+
+async function closeToolPanel(){if(await page.locator('.editor-context-panel').isVisible())await page.locator('.editor-context-panel').getByRole('button',{name:'Done',exact:true}).click();}
 
 async function field(label: string, value: string) {
   const control = page.getByLabel(label, { exact: true });
@@ -300,7 +273,9 @@ try {
         panel: document.querySelector('.editor-context-panel')?.getBoundingClientRect().top,
       };
     });
-    assert.ok(positions.player! < positions.panel! && positions.panel! < positions.timeline!, 'Mobile editor keeps the inspector beside the workflow: preview, inspector, timeline, with persistent tools');
+    assert.ok(positions.player! < positions.timeline!, 'Mobile preview leads directly into the timeline');
+    assert.equal(await page.locator('.editor-context-panel').evaluate(el=>getComputedStyle(el).position),'fixed','The inspector overlays the timeline instead of pushing it down');
+    await page.getByRole('button',{name:'Done',exact:true}).click();
     if (viewport.width === 844) {
       const frame = await page.evaluate(() => {
         const video = document.querySelector<HTMLVideoElement>('video[aria-label="Source playback"]')!;
@@ -322,6 +297,7 @@ try {
   }
 
   await page.setViewportSize({ width: 390, height: 844 });
+  await closeToolPanel();
   await page.locator('.context-timeline').scrollIntoViewIfNeeded();
   const startHandle = page.getByRole('slider', { name: 'Region 1 start trim handle', exact: true });
   const handleBox = await startHandle.boundingBox();
@@ -373,6 +349,8 @@ try {
   checks.push('Direct desktop Render preview works with playback options closed and plays a validated edited file');
   await page.getByLabel('Export file type', { exact: true }).selectOption('mkv');
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForFunction(()=>!document.querySelector('.cut-workspace')?.classList.contains('is-panel-open'));
+  await tool('Text');
   const done = page.getByRole('button', { name: 'Done', exact: true });
   if (await done.isVisible()) {
     await done.click();

@@ -25,6 +25,7 @@ import './slider.css';
 import './audio.css';
 import './overlay.css';
 import './link-import.css';
+import './mobile-editor.css';
 
 type Task = (work: () => Promise<unknown>) => Promise<void>;
 const primaryTabs = ['Library', 'Editor'] as const;
@@ -155,6 +156,7 @@ function App() {
     {dropping && <div className="drop-overlay" aria-hidden="true"><EditorIcon name="upload" size={36}/><strong>Drop to import</strong></div>}
     <a className="skip-link" href="#workspace-content">Skip to workspace</a>
     <header className="app-header">
+      {editing && <button className="mobile-editor-back" aria-label="Back to Library" onClick={() => navigate('Library')}><EditorIcon name="to-start" size={18}/><span>Library</span></button>}
       <div className="brand"><span className="brand-glyph" aria-hidden="true"><EditorIcon name="video" size={16}/></span><strong>Media Workbench</strong></div>
       <nav className="desktop-navigation" aria-label="Main">{navigation()}</nav>
       <div className="shell-actions"><div id="editor-header-actions" />
@@ -164,7 +166,7 @@ function App() {
     </header>
     <main id="workspace-content" tabIndex={-1} data-page={tab} className={editing ? 'editor-main page-content' : 'page-content'} aria-busy={busy}>
       {error && <div role="alert" className="error"><EditorIcon name="alert" size={18}/><span>{error}</span><button aria-label="Dismiss error" onClick={() => setError('')}>Dismiss</button></div>}
-      {notice && <p role="status" className="notice"><EditorIcon name="saved" size={18} tone="ok"/><span>{notice}</span></p>}
+      {notice && <p role="status" className="notice"><EditorIcon name="saved" size={18} tone="ok"/><span>{notice}</span>{editing&&<button aria-label="Dismiss notification" onClick={()=>setNotice('')}>Dismiss</button>}</p>}
       {tab === 'Input' && <Input caps={caps} run={run} refresh={refresh} done={()=>navigate('Library')} setNotice={setNotice} />}
       {tab === 'Library' && <><div className="page-heading"><div><h1>Library</h1><p>Your videos and their progress, together.</p></div><button onClick={() => void run(refresh)} disabled={busy}><EditorIcon name="refresh" size={16}/>Refresh</button></div>
         <Library jobs={jobs} onImport={()=>navigate('Input')} sources={sources} artifacts={artifacts} run={run} refresh={refresh} edit={edit} setNotice={setNotice} /><details className="library-projects"><summary>Saved projects</summary><SavedProjects run={run} onProject={openProject} /></details></>}

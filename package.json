@@ -1,6 +1,6 @@
 {
   "name": "media-workbench",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "private": true,
   "type": "module",
   "engines": {
@@ -22,7 +22,8 @@
     "tools:rollback": "node scripts/update-ytdlp.mjs --rollback",
     "package:desktop": "npm run build && node scripts/package-desktop.mjs",
     "package:installer": "npm run package:desktop && node scripts/make-installer.mjs",
-    "package:portable": "npm run build && node scripts/package-portable.mjs"
+    "package:portable": "npm run build && node scripts/package-portable.mjs",
+    "test:mobile": "tsx tests/mobile-editor.smoke.ts"
   },
   "dependencies": {
     "@fastify/cookie": "11.1.2",
