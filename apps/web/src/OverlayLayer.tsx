@@ -1,25 +1,42 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { Overlay } from '../../../packages/contracts/src/index';
 import { overlayUrl, visibleAt } from './overlay';
 
-type Props = { overlays:Overlay[]; time:number; selected?:number; editing:boolean; select:(index:number)=>void; commit:(index:number,patch:Partial<Overlay>)=>void };
-type Gesture = { pointer:number; index:number; mode:'move'|'scale'; startX:number; startY:number; origin:Overlay; rect:DOMRect; centerX:number; centerY:number; halfWidth:number; halfHeight:number; patch:Partial<Overlay> };
+type Props = { revision?:unknown; overlays:Overlay[]; time:number; selected?:number; editing:boolean; select:(index:number)=>void; commit:(index:number,patch:Partial<Overlay>)=>void };
+type Gesture = { pointer:number; index:number; overlays:Overlay[]; revision?:unknown; mode:'move'|'scale'; startX:number; startY:number; origin:Overlay; rect:DOMRect; centerX:number; centerY:number; halfWidth:number; halfHeight:number; patch:Partial<Overlay> };
 const corners = ['nw','ne','se','sw'] as const;
 const SNAP_PX = 8;
 
 // Positioned in the output picture's own box, so percentages match the export's fractions exactly.
-export function OverlayLayer({overlays,time,selected,editing,select,commit}:Props) {
+export function OverlayLayer({revision,overlays,time,selected,editing,select,commit}:Props) {
   const root = useRef<HTMLDivElement>(null);
   const gesture = useRef<Gesture|undefined>(undefined);
   const [draft,setDraft] = useState<{index:number;patch:Partial<Overlay>}>();
   const [guides,setGuides] = useState<{x:boolean;y:boolean}>({x:false,y:false});
+  const cancel = () => { gesture.current=undefined; setDraft(undefined); setGuides({x:false,y:false}); };
+  useLayoutEffect(()=>{
+    const g=gesture.current;
+    if(g&&(!editing||selected!==g.index||overlays!==g.overlays||revision!==g.revision))cancel();
+  },[overlays,selected,editing,revision]);
+  useEffect(()=>{
+    const key=(event:KeyboardEvent)=>{
+      if(!gesture.current)return;
+      if(event.key==='Escape'){event.preventDefault();event.stopPropagation();cancel();}
+      else if((event.ctrlKey||event.metaKey)&&['z','y'].includes(event.key.toLowerCase()))cancel();
+    };
+    const blur=()=>cancel();
+    const observer=new ResizeObserver(()=>{const g=gesture.current,rect=root.current?.getBoundingClientRect();if(g&&rect&&(rect.width!==g.rect.width||rect.height!==g.rect.height))cancel();});
+    if(root.current)observer.observe(root.current);
+    window.addEventListener('keydown',key,true);window.addEventListener('blur',blur);
+    return()=>{gesture.current=undefined;observer.disconnect();window.removeEventListener('keydown',key,true);window.removeEventListener('blur',blur);};
+  },[]);
   const begin = (event:React.PointerEvent<HTMLElement>, index:number, mode:Gesture['mode']) => {
-    if (event.button!==0 || !root.current) return;
+    if (event.button!==0 || gesture.current || !root.current) return;
     event.preventDefault(); event.stopPropagation();
     if (selected!==index || !editing) { select(index); if (mode==='scale') return; }
     const box = event.currentTarget.closest('.overlay-item')!.getBoundingClientRect(), rect = root.current.getBoundingClientRect();
     event.currentTarget.setPointerCapture(event.pointerId);
-    gesture.current = {pointer:event.pointerId,index,mode,startX:event.clientX,startY:event.clientY,origin:overlays[index],rect,centerX:box.left+box.width/2,centerY:box.top+box.height/2,halfWidth:box.width/2,halfHeight:box.height/2,patch:{}};
+    gesture.current = {pointer:event.pointerId,index,overlays,revision,mode,startX:event.clientX,startY:event.clientY,origin:overlays[index],rect,centerX:box.left+box.width/2,centerY:box.top+box.height/2,halfWidth:box.width/2,halfHeight:box.height/2,patch:{}};
   };
   const move = (event:React.PointerEvent<HTMLElement>) => {
     const g = gesture.current;
@@ -50,7 +67,7 @@ export function OverlayLayer({overlays,time,selected,editing,select,commit}:Prop
     event.preventDefault(); event.stopPropagation();
     commit(index, {x:clamp(o.x+dx), y:clamp(o.y+dy)});
   };
-  const handlers = (index:number, mode:Gesture['mode']) => ({onPointerDown:(e:React.PointerEvent<HTMLElement>)=>begin(e,index,mode),onPointerMove:move,onPointerUp:(e:React.PointerEvent<HTMLElement>)=>finish(e),onPointerCancel:(e:React.PointerEvent<HTMLElement>)=>finish(e,true),onLostPointerCapture:()=>{gesture.current=undefined;setDraft(undefined);setGuides({x:false,y:false});}});
+  const handlers = (index:number, mode:Gesture['mode']) => ({onPointerDown:(e:React.PointerEvent<HTMLElement>)=>begin(e,index,mode),onPointerMove:move,onPointerUp:(e:React.PointerEvent<HTMLElement>)=>finish(e),onPointerCancel:(e:React.PointerEvent<HTMLElement>)=>finish(e,true),onLostPointerCapture:(e:React.PointerEvent<HTMLElement>)=>{if(gesture.current?.pointer===e.pointerId)cancel();}});
   return <div ref={root} className="overlay-layer" onClick={event=>{if((event.target as HTMLElement).closest('.overlay-item'))event.stopPropagation();}}>
     {guides.x&&<i className="overlay-guide overlay-guide-x" aria-hidden="true"/>}
     {guides.y&&<i className="overlay-guide overlay-guide-y" aria-hidden="true"/>}

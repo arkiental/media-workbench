@@ -104,8 +104,15 @@ export async function extractFrame(path:string,outputPath:string,pts:number,tool
 }
 export async function extractThumbnail(file:string,outputPath:string,seconds:number,tools:ToolPaths,ctx:ExecutionContext):Promise<void>{
   if(!Number.isFinite(seconds)||seconds<0)throw new Error('Invalid thumbnail timestamp');
-  await runProcess(tools.ffmpeg,[...BASE,...INPUT_POLICY,'-ss',String(seconds),'-i',safePath(file),'-map','0:v:0','-vf','scale=480:270:force_original_aspect_ratio=decrease','-frames:v','1','-q:v','4','-update','1','-n',safePath(outputPath)],ctx,{outputPath});
-  if((await stat(outputPath)).size===0)throw new Error('Thumbnail extraction produced no image');
+  const image=['-map','0:v:0','-vf','scale=480:270:force_original_aspect_ratio=decrease','-pix_fmt','yuvj420p','-q:v','4'];
+  await runProcess(tools.ffmpeg,[...BASE,...INPUT_POLICY,'-ss',String(seconds),'-i',safePath(file),...image,'-frames:v','1','-update','1','-n',safePath(outputPath)],ctx,{outputPath});
+  if(await exists(outputPath)){if((await stat(outputPath)).size>0)return;throw new Error('Thumbnail extraction produced an empty image');}
+  // Duration can extend past the last video frame, including an audio-only tail.
+  // Locate a real frame before seeking; retain preroll and keep the final image.
+  const frames=await frameIndex(file,tools,seconds,ctx);
+  const previous=frames.filter(frame=>frame.pts<=seconds).at(-1)?.pts??0;
+  await runProcess(tools.ffmpeg,[...BASE,...INPUT_POLICY,'-ss',String(Math.max(0,previous-.00001)),'-noaccurate_seek','-i',safePath(file),...image,'-fps_mode','vfr','-update','1','-n',safePath(outputPath)],ctx,{outputPath});
+  if(!await exists(outputPath)||(await stat(outputPath)).size===0)throw new Error('No video frame is available at this position');
 }
 export type WaveformWindow={start?:number;duration?:number;points?:number;track?:number};
 export type WaveformResult={duration:number;peaks:number[];sampleRate:number;start:number;end:number;complete:boolean};

@@ -1,0 +1,81 @@
+import assert from 'node:assert/strict';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import path from 'node:path';
+import { chromium } from 'playwright';
+import { createServer } from '../apps/server/src/app.ts';
+import { discoverTools, runProcess } from '../packages/media/src/index.ts';
+
+const output=path.resolve('test-output/library-retention');await mkdir(output,{recursive:true});
+const tools=await discoverTools();
+for(const seconds of [1,4])await runProcess(tools.ffmpeg,['-y','-v','error','-f','lavfi','-i',`testsrc2=size=320x180:rate=10:duration=${seconds}`,'-c:v','libx264','-preset','ultrafast',path.join(output,`${seconds}.mp4`)]);
+const data=await readFile(path.join(output,'4.mp4')),short=await readFile(path.join(output,'1.mp4'));
+const token=randomUUID(),app=await createServer({dataDir:path.join(output,`service-${Date.now()}`),ownerToken:token,tools});
+await app.listen({host:'127.0.0.1',port:0});const address=app.server.address();assert(address&&typeof address==='object');
+const origin=`http://127.0.0.1:${address.port}`;
+const browser=await chromium.launch({channel:'msedge',headless:true}),page=await browser.newPage({viewport:{width:1280,height:800}});
+const checks:string[]=[],errors:string[]=[];page.on('pageerror',error=>errors.push(error.message));
+const card=(name:string)=>page.locator('.media-card').filter({has:page.getByRole('heading',{name,exact:true})});
+const time=async(value:number)=>{try{await page.waitForFunction(value=>{const v=document.querySelector<HTMLVideoElement>('.library-preview video');return !!v&&!v.seeking&&Math.abs(v.currentTime-value)<.1;},value,{timeout:10000});}catch{throw Error(JSON.stringify({expected:value,media:await page.locator('.library-preview video').evaluate((v:HTMLVideoElement)=>({time:v.currentTime,duration:v.duration,seeking:v.seeking,error:v.error?.message,src:v.currentSrc}))}));}};
+const seek=async(value:number)=>{await page.waitForFunction(()=>document.querySelector<HTMLVideoElement>('.library-preview video')!.readyState>=2);await page.locator('.library-preview video').evaluate((v:HTMLVideoElement,value)=>{v.pause();v.currentTime=value;},value);await time(value);};
+try{
+  await page.goto(origin);await page.getByLabel('Access token').fill(token);await page.getByRole('button',{name:'Connect',exact:true}).click();
+  await page.locator('.app-header').getByRole('button',{name:'Import',exact:true}).click();
+  await page.getByLabel('Local media').setInputFiles(Array.from({length:7},(_,i)=>({name:`Clip ${i+1}.mp4`,mimeType:'video/mp4',buffer:data})));
+  await page.getByRole('heading',{name:'Library',exact:true}).waitFor();await page.getByRole('region',{name:'File imports'}).getByRole('button',{name:'Dismiss'}).click();
+  const target=card('Clip 4.mp4');await target.getByRole('button',{name:'Preview',exact:true}).click();
+  await seek(2.4);await target.getByRole('button',{name:'Close preview',exact:true}).click();await target.getByRole('button',{name:'Preview',exact:true}).click();await time(2.4);
+  assert.equal(await target.locator('video').evaluate((v:HTMLVideoElement)=>v.paused),true);
+  await page.getByRole('button',{name:'Next preview',exact:true}).click();await time(0);
+  await page.getByRole('button',{name:'Previous preview',exact:true}).click();await time(2.4);
+  checks.push('Closing/reopening and next/previous preview navigation retain each item’s own position without autoplay.');
+  const sources=await (await page.request.get(`${origin}/api/v1/sources`)).json();const source=sources.find((s:any)=>s.name==='Clip 4.mp4');
+  const submitted=await page.request.post(`${origin}/api/v1/jobs`,{headers:{'idempotency-key':randomUUID()},data:{type:'proxy',sourceId:source.id}});assert.equal(submitted.status(),202,await submitted.text());const job=await submitted.json();
+  let completed:any;
+  for(let i=0;i<100;i++){completed=(await (await page.request.get(`${origin}/api/v1/jobs`)).json()).find((j:any)=>j.id===job.id);if(completed.state==='completed')break;assert.notEqual(completed.state,'failed');await new Promise(resolve=>setTimeout(resolve,100));}
+  assert.equal(completed.state,'completed');
+  await page.getByRole('button',{name:'Refresh',exact:true}).click();
+  await target.getByRole('button',{name:'Play playback copy',exact:true}).click();await time(2.4);
+  await seek(3.2);await target.getByRole('button',{name:'Play original',exact:true}).click();await time(3.2);
+  const copyUrl=`${origin}/api/v1/artifacts/${completed.artifactId}/content`;
+  await page.route(copyUrl,route=>{
+    const range=/bytes=(\d+)-(\d*)/.exec(route.request().headers().range||'');
+    const start=range?Number(range[1]):0,end=range?.[2]?Math.min(Number(range[2]),short.length-1):short.length-1;
+    return route.fulfill({status:range?206:200,contentType:'video/mp4',headers:{'accept-ranges':'bytes',...(range?{'content-range':`bytes ${start}-${end}/${short.length}`}:{})},body:short.subarray(start,end+1)});
+  });
+  await target.getByRole('button',{name:'Play playback copy',exact:true}).click();await time(.95);
+  await target.getByRole('button',{name:'Play original',exact:true}).click();await time(.95);
+  await page.unroute(copyUrl);
+  await target.getByRole('button',{name:'Play playback copy',exact:true}).click();await time(.95);
+  await seek(1.6);
+  const deleted=await page.request.delete(`${origin}/api/v1/artifacts/${completed.artifactId}`,{data:{confirmOriginal:false}});assert.equal(deleted.ok(),true);
+  await page.getByRole('button',{name:'Refresh',exact:true}).click();await target.getByRole('button',{name:'Play original',exact:true}).waitFor({state:'hidden'});await time(1.6);
+  checks.push('Original/copy switching retains absolute time, shorter actual media clamps near its end, and a removed copy falls back to the original at the saved position.');
+  await target.getByRole('button',{name:'Close preview',exact:true}).click();
+  await target.getByRole('button',{name:'Edit source',exact:true}).scrollIntoViewIfNeeded();
+  const anchor=await page.evaluate(()=>{
+    const rows=Array.from(document.querySelectorAll<HTMLElement>('.library-page .media-card'));const index=rows.findIndex(row=>row.getBoundingClientRect().bottom>100);
+    return {id:rows[index].dataset.artifactId!,offset:rows[index].getBoundingClientRect().top,next:rows[index+1]?.dataset.artifactId};
+  });
+  await target.getByRole('button',{name:'Edit source',exact:true}).click();await page.locator('main[data-page="Editor"]').waitFor();
+  let upload=await page.request.post(`${origin}/api/v1/uploads`,{headers:{'content-type':'application/octet-stream','x-filename':encodeURIComponent('New above.mp4')},data});
+  for(let attempt=0;upload.status()===429&&attempt<10;attempt++){await new Promise(resolve=>setTimeout(resolve,500));upload=await page.request.post(`${origin}/api/v1/uploads`,{headers:{'content-type':'application/octet-stream','x-filename':encodeURIComponent('New above.mp4')},data});}
+  assert.equal(upload.ok(),true,await upload.text());
+  const added=await upload.json();
+  await page.waitForResponse(async response=>response.url()===`${origin}/api/v1/artifacts`&&response.ok()&&(await response.json()).some((a:any)=>a.id===added.artifactId),{timeout:15000});
+  await page.goBack();await page.getByRole('heading',{name:'Library',exact:true}).waitFor();
+  await page.waitForFunction(anchor=>Math.abs(document.querySelector(`[data-artifact-id="${anchor.id}"]`)!.getBoundingClientRect().top-anchor.offset)<5,anchor);
+  checks.push('A real import arriving above the prior position while editing preserves the same visible row and offset on Back.');
+  await page.goForward();await page.locator('main[data-page="Editor"]').waitFor();
+  const removal=await page.request.delete(`${origin}/api/v1/artifacts/${anchor.id}`,{data:{confirmOriginal:true}});assert.equal(removal.ok(),true);
+  await page.waitForResponse(async response=>response.url()===`${origin}/api/v1/artifacts`&&response.ok()&&!(await response.json()).some((a:any)=>a.id===anchor.id),{timeout:15000});
+  await page.goBack();await page.getByRole('heading',{name:'Library',exact:true}).waitFor();
+  if(anchor.next)await page.waitForFunction(anchor=>Math.abs(document.querySelector(`[data-artifact-id="${anchor.next}"]`)!.getBoundingClientRect().top-anchor.offset)<5,anchor);
+  await page.getByLabel('Search media',{exact:true}).fill('no result');await page.getByRole('heading',{name:'No matching media'}).waitFor();
+  await page.getByRole('button',{name:'Clear filters'}).click();await page.getByLabel('Sort library').selectOption('name');
+  assert.ok(await page.evaluate(()=>scrollY<5));
+  checks.push('Deleting the anchored item falls back to its neighbor; filtering to empty and changing sort recover at the top without stale previews.');
+  await page.setViewportSize({width:390,height:844});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+  await page.screenshot({path:path.join(output,'mobile.png')});
+  assert.deepEqual(errors,[]);await writeFile(path.join(output,'checks.json'),JSON.stringify({checks,errors},null,2));console.log(checks.join('\n'));
+}finally{await browser.close();await app.close();}

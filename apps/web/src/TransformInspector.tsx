@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { EditorIcon } from './EditorIcon';
 import { SizeInput, even, presets } from './TransformViewport';
 import { angle, clampCrop, outputSize } from './transform';
@@ -8,6 +8,28 @@ type Props = { recipe: Recipe; change: (recipe: Recipe) => void; width: number; 
 
 const ratios: [string, number | undefined][] = [['Free', undefined], ['16:9', 16 / 9], ['4:3', 4 / 3], ['1:1', 1], ['9:16', 9 / 16]];
 
+function CropInput({ label, value, min, max, commit }: { label: string; value: number; min: number; max: number; commit: (value: number) => void }) {
+  const [text, setText] = useState<string>();
+  const cancelled = useRef(false);
+  useEffect(() => setText(undefined), [value]);
+  const apply = () => {
+    if (!cancelled.current && text !== undefined && text.trim()) {
+      const number = Number(text);
+      if (Number.isFinite(number)) commit(Math.max(min, Math.min(max, Math.round(number))));
+    }
+    cancelled.current = false;
+    setText(undefined);
+  };
+  return <input aria-label={label} type="number" min={min} max={max} step={1} value={text ?? value}
+    onFocus={() => { cancelled.current = false; }} onChange={event => setText(event.target.value)} onBlur={apply}
+    onKeyDown={event => {
+      if (event.key === 'Enter' || event.key === 'Escape') {
+        event.preventDefault(); event.stopPropagation();
+        if (event.key === 'Escape') cancelled.current = true;
+        event.currentTarget.blur();
+      }
+    }} />;
+}
 export function TransformInspector({ recipe, change, width, height, sourceRotation }: Props) {
   const [locked, setLocked] = useState(true);
   const swapped = angle(recipe.rotate - sourceRotation) % 180 === 90;
@@ -20,7 +42,10 @@ export function TransformInspector({ recipe, change, width, height, sourceRotati
   const scaled = (factor: number) => setResize({ width: even(natural.width * factor), height: even(natural.height * factor) });
   const rotate = (value: number) => change({ ...recipe, rotate: angle(value) as Recipe['rotate'] });
   const crop = recipe.crop;
-  const setCrop = (patch: Partial<NonNullable<Recipe['crop']>>) => change({ ...recipe, crop: clampCrop({ ...(crop || { x: 0, y: 0, width, height }), ...patch }, width, height) });
+  const setCrop = (patch: Partial<NonNullable<Recipe['crop']>>) => {
+    const next = clampCrop({ ...(crop || { x: 0, y: 0, width, height }), ...patch }, width, height);
+    if (!crop || (['x', 'y', 'width', 'height'] as const).some(key => next[key] !== crop[key])) change({ ...recipe, crop: next });
+  };
   const applyRatio = (target?: number) => {
     if (!target) return;
     const wanted = swapped ? 1 / target : target;
@@ -43,7 +68,7 @@ export function TransformInspector({ recipe, change, width, height, sourceRotati
         </div>
         <div className="ti-grid">
           {(['x', 'y', 'width', 'height'] as const).map(key => <label key={key}><span>{key === 'x' ? 'X' : key === 'y' ? 'Y' : key === 'width' ? 'Width' : 'Height'}</span>
-            <input aria-label={`Crop ${key}`} type="number" min={key === 'x' || key === 'y' ? 0 : 1} step={1} value={crop[key]} onChange={event => { const v = event.target.valueAsNumber; if (Number.isFinite(v)) setCrop({ [key]: v }); }} /></label>)}
+            <CropInput label={`Crop ${key}`} min={key === 'x' || key === 'y' ? 0 : 1} max={key === 'x' ? width - crop.width : key === 'y' ? height - crop.height : key === 'width' ? width : height} value={crop[key]} commit={value => setCrop({ [key]: value })} /></label>)}
         </div>
       </> : <p className="audio-note">Turn on crop to pick an area to keep, then drag the frame in the viewer.</p>}
     </div>

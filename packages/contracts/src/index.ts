@@ -34,6 +34,7 @@ export const RecipeSchema = z.object({
 }).strict();
 export type Recipe = z.infer<typeof RecipeSchema>;
 export const ExportSchema = z.object({
+  fileName: z.string().max(300).optional(),
   cut: z.enum(['auto','copy','exact']).default('auto'), mode: z.enum(['auto','quality','bitrate','size']).default('quality'),
   copyValidation: z.enum(['fast','full']).optional(),
   codec: z.enum(['h264','hevc','av1']).default('h264'), container: z.enum(['mp4','mkv']).default('mp4'),
@@ -70,4 +71,5 @@ export type Project = { id:string; name:string; recipe:Recipe; options:ExportOpt
 export type ToolPaths = { ffmpeg:string; ffprobe:string; ytdlp:string; node?:string };
 export type NativeRunOptions = {maxStdoutBytes?:number;maxStderrBytes?:number;outputPath?:string;duration?:number;progressOffset?:number;stdin?:Buffer|string;cwd?:string;onOutputLine?:(line:string,stream:'stdout'|'stderr')=>void};
 export type ExecutionContext = { signal:AbortSignal; workDir:string; onProgress?:(progress:number,message?:string)=>void; onStage?:(state:JobState)=>void; onPlan?:(plan:Plan)=>void; maxRuntimeSeconds?:number; maxBytes?:number;allowedEncoders?:string[];maxCpuCores?:number;maxMemoryMiB?:number;bandwidthBytesPerSecond?:number;maxTransferBytes?:number; runTool?:(binary:string,args:string[],options?:NativeRunOptions)=>Promise<{stdout:Buffer;stderr:string;exitCode:number}> };
-export type NativeBridge = { chooseDownloadFolder?:()=>Promise<{id:string;label:string}|undefined>; capabilities:()=>Promise<Record<string,{state:string;reason?:string}>>; copyFile:(id:string)=>Promise<void>; copyPath:(id:string)=>Promise<void>; reveal:(id:string)=>Promise<void>; saveAs:(id:string)=>Promise<void>; dragOut:(id:string)=>void; listActions:()=>Promise<unknown[]>; runAction:(actionId:string,artifactId:string)=>Promise<unknown>; configureAction:(action:unknown)=>Promise<unknown> };
+export type NativeSaveResult = {status:'saved';path:string}|{status:'cancelled'};
+export type NativeBridge = { workspaceGet?:(key:string)=>{value?:string|null;error?:string}; workspaceSet?:(key:string,value:string,expected:string|null)=>{ok?:boolean;error?:string}; chooseDownloadFolder?:()=>Promise<{id:string;label:string}|undefined>; capabilities:()=>Promise<Record<string,{state:string;reason?:string}>>; copyFile:(id:string)=>Promise<void>; copyPath:(id:string)=>Promise<void>; reveal:(id:string)=>Promise<void>; saveAs:(id:string)=>Promise<NativeSaveResult|void>; dragOut:(id:string)=>void; listActions:()=>Promise<unknown[]>; runAction:(actionId:string,artifactId:string)=>Promise<unknown>; configureAction:(action:unknown)=>Promise<unknown> };

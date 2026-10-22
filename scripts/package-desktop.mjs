@@ -10,7 +10,7 @@ import { downloadPinned, hashFile, nativeTools, portableEnvironment, safeArchive
 const execute = promisify(execFile);
 const root = fileURLToPath(new URL('../', import.meta.url));
 const runtimeFiles = ['apps/desktop', 'dist', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'README.md', 'SECURITY.md', 'package-lock.json', 'toolchain.lock.json'];
-const publicDocs = ['docs/API.md', 'docs/WINDOWS_PORTABLE.md'];
+const publicDocs = ['docs/API.md', 'docs/WINDOWS_PORTABLE.md', 'docs/UX_RELIABILITY_2026-10-22.md'];
 const supplements = { 'abstract-logging': 'notices/npm/abstract-logging-LICENSE.txt' };
 
 async function exists(file) { return access(file).then(() => true, () => false); }
@@ -85,6 +85,8 @@ async function inventory(directory, base = directory) {
 
 export async function packageDesktop({ portable = false } = {}) {
   process.chdir(root);
+  const outputRoot=path.resolve(process.env.MW_PACKAGE_OUTPUT||'release');
+  if(process.env.MW_PACKAGE_OUTPUT&&await exists(outputRoot))throw Error('Choose a new package output directory; existing output will not be replaced.');
   if (portable && (process.platform !== 'win32' || process.arch !== 'x64')) throw Error('Portable release packaging requires Windows x64');
   const pkg = JSON.parse(await readFile('package.json', 'utf8'));
   const lock = JSON.parse(await readFile('package-lock.json', 'utf8'));
@@ -116,7 +118,7 @@ export async function packageDesktop({ portable = false } = {}) {
   }
   const electronArchive = await downloadArtifact({ version: toolsLock.electron, artifactName: 'electron', platform: process.platform, arch: process.arch });
   const electron = { version: toolsLock.electron, source: 'https://github.com/electron/electron/releases/download/v' + toolsLock.electron + '/electron-v' + toolsLock.electron + '-' + process.platform + '-' + process.arch + '.zip', sha256: await hashFile(electronArchive), checksumVerification: '@electron/get release checksum validation' };
-  const result = await packager({ dir: staging, electronZipDir: path.dirname(electronArchive), out: 'release', name: 'Media Workbench', platform: process.platform, arch: process.arch, electronVersion: toolsLock.electron, asar: false, overwrite: true, prune: false, appCopyright: 'MIT original application; separate component licenses', executableName: 'media-workbench' });
+  const result = await packager({ dir: staging, electronZipDir: path.dirname(electronArchive), out: outputRoot, name: 'Media Workbench', platform: process.platform, arch: process.arch, electronVersion: toolsLock.electron, asar: false, overwrite: !process.env.MW_PACKAGE_OUTPUT, prune: false, appCopyright: 'MIT original application; separate component licenses', executableName: 'media-workbench' });
   for (const output of result) {
     const app = path.join(output, 'resources', 'app'), packagedServerSha256 = await hashFile(path.join(app, 'dist/server/main.js'));
     if (packagedServerSha256 !== sourceServerSha256 || await hashFile('dist/server/main.js') !== sourceServerSha256) throw Error('Packaged server differs from the final build; rebuild from stable source.');

@@ -1,0 +1,42 @@
+import assert from 'node:assert/strict';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import path from 'node:path';
+import { chromium } from 'playwright';
+import { createServer } from '../apps/server/src/app.ts';
+import { discoverTools, runProcess } from '../packages/media/src/index.ts';
+
+const output=path.resolve('test-output/export-plan-busy');await mkdir(output,{recursive:true});
+const tools=await discoverTools(),ffmpeg=tools.ffmpeg,fixture=path.join(output,'sample.mp4');
+await runProcess(ffmpeg,['-y','-v','error','-f','lavfi','-i','testsrc2=size=1280x720:rate=30:duration=12','-c:v','libx264','-preset','ultrafast',fixture]);
+const token=randomUUID(),dataDir=path.join(output,`service-${Date.now()}`);let app=await createServer({dataDir,ownerToken:token,tools});
+await app.listen({host:'127.0.0.1',port:0});const address=app.server.address();assert(address&&typeof address==='object');
+const origin=`http://127.0.0.1:${address.port}`,browser=await chromium.launch({channel:'msedge',headless:true}),page=await browser.newPage({viewport:{width:1280,height:900}});
+const checks:string[]=[],errors:string[]=[];page.on('pageerror',error=>errors.push(error.message));
+const dialog=page.locator('dialog[aria-label="Export media"]');
+const submit=()=>dialog.getByRole('button',{name:'Export using reviewed plan'});
+const open=async()=>{await page.getByRole('button',{name:/^Export[.\u2026]$/,exact:true}).click();};
+const review=async()=>{await page.waitForFunction(()=>document.querySelectorAll('.thumb-skeleton').length===0);await dialog.getByRole('button',{name:'Resolve export plan'}).click();await page.waitForFunction(()=>!(document.querySelector('[aria-label="Export using reviewed plan"]') as HTMLButtonElement)?.disabled);};
+let submissions:string[]=[],retries=0;
+page.on('request',req=>{if(req.method()!=='POST')return;if(new URL(req.url()).pathname==='/api/v1/jobs')submissions.push(req.headers()['idempotency-key']);if(req.url().endsWith('/retry'))retries++;});
+try {
+  await page.goto(origin);await page.getByLabel('Access token').fill(token);await page.getByRole('button',{name:'Connect',exact:true}).click();
+  await page.locator('.app-header').getByRole('button',{name:'Import',exact:true}).click();await page.getByLabel('Local media').setInputFiles(fixture);
+  await page.getByRole('heading',{name:'Library',exact:true}).waitFor();await page.getByRole('region',{name:'File imports'}).getByRole('button',{name:'Dismiss'}).click();await page.getByRole('button',{name:'Edit source',exact:true}).click();
+  await page.waitForFunction(()=>Object.keys(localStorage).some(key=>key.startsWith('mw:last:')&&localStorage.getItem(key)?.includes('sourceId')));await page.reload();await open();let calls=0,mode='recover',active=0,maxActive=0;
+  await page.route('**/api/v1/export/plan',async route=>{calls++;active++;maxActive=Math.max(maxActive,active);try{if(mode==='forever'||mode==='close'||mode==='change'||calls<=2)await route.fulfill({status:429,json:{error:'Two preview/inspection operations already active'}});else if(mode==='slow'){const response=await route.fetch();await new Promise(resolve=>setTimeout(resolve,16000));await route.fulfill({response});}else if(mode==='validation')await route.fulfill({status:400,json:{error:'Invalid test setting'}});else await route.continue();}finally{active--;}});
+  await dialog.getByRole('button',{name:'Resolve export plan'}).evaluate((b:HTMLButtonElement)=>{b.click();b.click();});
+  await dialog.getByRole('status').filter({hasText:'Waiting for preview work'}).waitFor();assert.equal(submissions.length,0);
+  await page.waitForFunction(()=>!(document.querySelector('[aria-label="Export using reviewed plan"]') as HTMLButtonElement).disabled);assert.ok(calls>=3);assert.equal(maxActive,1);assert.equal(submissions.length,0);
+  checks.push('Busy capacity responses recover automatically to a real plan after reload; repeated Review has one sequential attempt and creates no jobs.');
+  mode='slow';calls=10;await review();assert.equal(calls,11);checks.push('An accepted review taking over 15 seconds retains the existing request allowance and is not duplicated.');
+  mode='forever';calls=0;await dialog.getByRole('button',{name:'Resolve export plan'}).click();await dialog.getByRole('alert').filter({hasText:'Preview work is still busy'}).waitFor({timeout:20000});assert.equal(calls,8);assert.ok(await dialog.getByRole('button',{name:'Resolve export plan'}).isEnabled());
+  mode='recover';await review();checks.push('Capacity recovery is bounded to eight attempts and a 15-second retry window, with readable final feedback and a working manual retry.');
+  mode='close';calls=0;await dialog.getByRole('button',{name:'Resolve export plan'}).click();await dialog.getByRole('status').filter({hasText:'Waiting for preview work'}).waitFor();await page.keyboard.press('Escape');await page.waitForTimeout(1000);assert.equal(calls,1);await open();assert.ok(await dialog.getByRole('button',{name:'Resolve export plan'}).isEnabled());
+  mode='change';calls=0;await dialog.getByRole('button',{name:'Resolve export plan'}).click();await dialog.getByRole('status').filter({hasText:'Waiting for preview work'}).waitFor();await dialog.getByLabel('Export name',{exact:true}).fill('Changed while waiting');await page.waitForTimeout(1000);assert.equal(calls,1);assert.ok(await submit().isDisabled());
+  mode='validation';calls=10;await dialog.getByRole('button',{name:'Resolve export plan'}).click();await dialog.getByRole('alert').filter({hasText:'Invalid test setting'}).waitFor();assert.equal(calls,11);
+  mode='recover';await review();await submit().click();await dialog.getByRole('status').filter({hasText:/^Export ready$/}).waitFor({timeout:60000});assert.equal(submissions.length,1);
+  checks.push('Closing or editing settings cancels waiting without stale plans; validation failures are not retried. A later review/export succeeds once.');
+  await page.setViewportSize({width:390,height:844});await dialog.getByLabel('Export name',{exact:true}).fill('Mobile wait');mode='close';calls=0;await dialog.getByRole('button',{name:'Resolve export plan'}).press('Enter');await dialog.getByRole('status').filter({hasText:'Waiting for preview work'}).waitFor();assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await page.screenshot({path:path.join(output,'mobile-waiting.png')});await page.keyboard.press('Escape');
+  assert.deepEqual(errors,[]);await writeFile(path.join(output,'checks.json'),JSON.stringify({checks,errors},null,2));console.log(JSON.stringify({checks,errors}));
+}finally{await browser.close();await app.close();}

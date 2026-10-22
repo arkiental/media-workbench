@@ -62,10 +62,11 @@ export const api = {
   frames:(id:string,around:number)=>request<{pts:number;keyframe:boolean}[]>(`/sources/${id}/frames?around=${around}`),
   waveform:(id:string)=>request<{duration:number;peaks:number[];sampleRate:number}>(`/sources/${id}/waveform`),
   projects:()=>request<Project[]>('/projects'),
-  saveProject:(project:Omit<Project,'id'|'updatedAt'>,id?:string)=>request<Project>(`/projects${id?`/${id}`:''}`,{method:id?'PUT':'POST',body:JSON.stringify(project)}),
+  saveProject:(project:Omit<Project,'id'|'updatedAt'>,id?:string)=>request<Project>('/projects',{method:'POST',body:JSON.stringify({...project,...(id?{id}:{})})}),
   remove:(path:string)=>request(path,{method:'DELETE'}),
   patch:(path:string,body:unknown)=>request<any>(path,{method:'PATCH',body:JSON.stringify(body)})
 };
 export function contentUrl(id:string) { return `/api/v1/artifacts/${id}/content`; }
+export function downloadUrl(id:string) { return `${contentUrl(id)}?download=1`; }
 export function saveJson(name:string,value:unknown) { saveText(name,JSON.stringify(value,null,2),'application/json'); }
 export function saveText(name:string,value:string,type='text/plain') { const a=document.createElement('a'); const url=URL.createObjectURL(new Blob([value],{type})); a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),5000); }

@@ -29,6 +29,8 @@ try {
   await page.getByRole('button',{name:'Edit source',exact:true}).click();
   await page.waitForFunction(()=>{const video=document.querySelector<HTMLVideoElement>('video[aria-label="Source playback"]');return !!video&&video.readyState>=2;});
 
+  await page.waitForFunction(()=>{const images=[...document.querySelectorAll<HTMLImageElement>('.thumbs img')];return images.length>0&&images.every(image=>image.complete&&image.naturalWidth>0)&&!document.querySelector('.thumb-skeleton,.waveform-empty.is-loading');},undefined,{timeout:45000});
+
   // Ctrl+V with an image on the clipboard adds an overlay at the playhead.
   await page.evaluate(async()=>{
     const canvas=document.createElement('canvas');canvas.width=128;canvas.height=64;const context=canvas.getContext('2d')!;context.fillStyle='#ff0000';context.fillRect(0,0,128,64);

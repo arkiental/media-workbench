@@ -1,0 +1,19 @@
+.import-queue { border: 1px solid var(--control-line); padding: 16px; margin-bottom: 20px; }
+.import-queue-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+.import-queue p { margin: 6px 0; }
+.import-queue button, .import-queue summary { min-height: 44px; }
+.import-queue summary { display: flex; align-items: center; cursor: pointer; text-decoration: underline; }
+.import-current { display: grid; grid-template-columns: minmax(0, 1fr) minmax(80px, 1fr) auto; align-items: center; gap: 12px; margin: 12px 0; }
+.import-current span, .import-queue li span { overflow-wrap: anywhere; min-width: 0; }
+.import-current progress { width: 100%; }
+.import-queue ul { padding: 0; list-style: none; max-height: 240px; overflow: auto; }
+.import-queue li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 16px; padding: 10px 0; border-top: 1px solid var(--control-line); }
+.import-queue li p { grid-column: 1 / -1; overflow-wrap: anywhere; }
+@media (max-width: 600px) { .import-current { grid-template-columns: minmax(0, 1fr); gap: 8px; } .import-queue-heading .actions { width: 100%; flex-wrap: wrap; } }
+
+.editing-shell .editor-main > .import-queue {
+  position: fixed; z-index: 39; top: 60px; right: 8px;
+  width: min(520px, calc(100% - 16px)); max-height: 30dvh;
+  overflow: auto; margin: 0; background: var(--surface);
+  box-shadow: 0 4px 16px #0006;
+}

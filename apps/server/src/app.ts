@@ -9,6 +9,7 @@ import { pipeline } from 'node:stream/promises';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { Store } from '../../../packages/jobs/src/store.ts';
+import { exportFileName, availableExportName } from '../../../packages/contracts/src/export-name.ts';
 import { Queue } from '../../../packages/jobs/src/queue.ts';
 import { defaultPolicy, enforceJob, enforceMedia } from '../../../packages/core/src/policy.ts';
 import { defaultPreset, effectiveOptions, migratePreset } from '../../../packages/core/src/presets.ts';
@@ -115,7 +116,12 @@ export async function createServer(options:ServerOptions){
    if(video){const recipe=request.recipe;let width=recipe.crop?.width||video.width!,height=recipe.crop?.height||video.height!;if(Math.abs(recipe.rotate-(video.rotation||0))%180===90)[width,height]=[height,width];width=recipe.resize?.width||Math.max(2,Math.floor(width/2)*2);height=recipe.resize?.height||Math.max(2,Math.floor(height/2)*2);const header=captionLayout(recipe.caption,width);if(width*(height+header.height)>user.policy.maxPixels)throw bad('Output resolution including caption exceeds policy');}
   }return request;
  }
- function submit(input:unknown,user:User,idem:string,batchId?:string){const submittedRequest=JobRequestSchema.parse(input);const accepted=store.submissionByKey(user.id,idem);if(accepted){if(JSON.stringify(accepted.submittedRequest||accepted.request)!==JSON.stringify(submittedRequest))throw bad('Idempotency key reused with different request');return accepted;}const request=validateRequest(input,user);const existing=store.existingSubmission(user.id,request,idem);if(existing)return existing;if(store.jobs(user.id).filter(j=>!['completed','failed','cancelled','interrupted'].includes(j.state)).length>=user.policy.maxQueued)throw bad('Queue limit reached',429);const record=request.type==='export'&&request.presetId?store.get<any>('preset',request.presetId,user.id):undefined;const result=store.submit(user.id,request,idem,batchId,record?{preset:record.preset,original:record.original}:undefined,submittedRequest);queue.tick();return result.job;}
+ function submit(input:unknown,user:User,idem:string,batchId?:string){const submittedRequest=JobRequestSchema.parse(input);const accepted=store.submissionByKey(user.id,idem);if(accepted){if(JSON.stringify(accepted.submittedRequest||accepted.request)!==JSON.stringify(submittedRequest))throw bad('Idempotency key reused with different request');return accepted;}const request=validateRequest(input,user);const existing=store.existingSubmission(user.id,request,idem);if(existing)return existing;if(store.jobs(user.id).filter(j=>!['completed','failed','cancelled','interrupted'].includes(j.state)).length>=user.policy.maxQueued)throw bad('Queue limit reached',429);if(request.type==='export'){
+   const source=store.get<Source>('source',request.recipe.sourceId,user.id)!;
+   const names=[...store.all<Artifact>('artifact',user.id).map(a=>a.name),...store.jobs(user.id).flatMap(j=>j.request.type==='export'&&j.request.options.fileName?[j.request.options.fileName]:[])];
+   request.options.fileName=availableExportName(exportFileName(request.options.fileName,source.name,request.options.container),names);
+  }
+  const record=request.type==='export'&&request.presetId?store.get<any>('preset',request.presetId,user.id):undefined;const result=store.submit(user.id,request,idem,batchId,record?{preset:record.preset,original:record.original}:undefined,submittedRequest);queue.tick();return result.job;}
  const idempotency=(req:FastifyRequest)=>z.string().min(8).max(200).parse(req.headers['idempotency-key']);
  const params=(r:FastifyRequest)=>r.params as {id:string};
  async function auxiliaryWork<T>(req:FastifyRequest,fn:(ctx:ExecutionContext & {storageReservation?:ReturnType<Store['reserve']>})=>Promise<T>){
@@ -199,7 +205,7 @@ export async function createServer(options:ServerOptions){
   const finish=()=>{if(released)return;released=true;release();stream.destroy();activeTransfers.set(a.id,Math.max(0,(activeTransfers.get(a.id)||1)-1));};
   reply.raw.once('close',finish);
   reply.header('Accept-Ranges','bytes').header('Content-Length',end-start+1).type(artifactContentType(a));
-  if((req.query as any).download==='1')reply.header('Content-Disposition',`attachment; filename*=UTF-8''${encodeURIComponent(a.name)}`);const limited=bandwidth.stream(a.ownerId,policy.bandwidthBytesPerSecond,policy.maxTransferBytes);stream.on('error',e=>limited.destroy(e));limited.on('close',()=>stream.destroy());stream.pipe(limited);return reply.send(limited);
+  if((req.query as any).download==='1')reply.header('Content-Disposition',`attachment; filename*=UTF-8''${encodeURIComponent(a.name).replace(/['()*]/g,c=>'%'+c.charCodeAt(0).toString(16).toUpperCase())}`);const limited=bandwidth.stream(a.ownerId,policy.bandwidthBytesPerSecond,policy.maxTransferBytes);stream.on('error',e=>limited.destroy(e));limited.on('close',()=>stream.destroy());stream.pipe(limited);return reply.send(limited);
  });
  app.get('/api/v1/artifacts/:id/thumbnail',async(req,reply)=>{
   const artifact=owned<Artifact>('artifact',params(req).id,req);previewPermission(req);

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { availableParallelism } from 'node:os';
 import type { Artifact, Source, ToolPaths, EncoderCapability, ExecutionContext, Job, MediaInfo } from '../../contracts/src/index.ts';
 import { Store } from './store.ts';
+import { exportFileName } from '../../contracts/src/export-name.ts';
 import { enforceJob, enforceMedia } from '../../core/src/policy.ts';
 import { createProxy, exportMedia, validateMedia } from '../../media/src/index.ts';
 import { downloadMedia, redactError } from '../../../apps/server/src/download.ts';
@@ -51,7 +52,7 @@ export class Queue {
    } else {
     const sid=request.type==='export'?request.recipe.sourceId:request.sourceId;const source=this.store.get<Source>('source',sid,user.id);if(!source)throw Error('Source not found');const original=this.store.get<Artifact>('artifact',source.artifactId,user.id);if(!original)throw Error('Original artifact not found');
     const input=await managedPath(this.store,original.id);enforceMedia(original.media,user.policy);this.store.lease(original.id,(user.policy.maxRuntimeSeconds+60)*1000);sourceId=source.id;
-    staged=path.join(workDir,request.type==='export'?'output.'+request.options.container:'proxy.mp4');name=request.type==='export'?'clip.'+request.options.container:'preview.mp4';kind=request.type==='export'?'export':'proxy';
+    staged=path.join(workDir,request.type==='export'?'output.'+request.options.container:'proxy.mp4');name=request.type==='export'?(request.options.fileName||exportFileName(undefined,source.name,request.options.container)):'preview.mp4';kind=request.type==='export'?'export':'proxy';
     this.store.updateJob(job.id,{state:'processing'});
     if(request.type==='proxy')verifiedMedia=await createProxy(input,staged,this.tools,ctx);
     else {let extraAudio:string|undefined;if(request.recipe.audio.sourceId){const audio=this.store.get<Source>('source',request.recipe.audio.sourceId,user.id);if(!audio)throw Error('Audio source not found');extraAudio=await managedPath(this.store,audio.artifactId);this.store.lease(audio.artifactId,(user.policy.maxRuntimeSeconds+60)*1000);}

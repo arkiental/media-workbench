@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright';
 import { createServer } from '../apps/server/src/app.ts';
 import { discoverTools, runProcess } from '../packages/media/src/index.ts';
 
-const evidence=path.resolve('test-output/transform');
-await mkdir(evidence,{recursive:true});
+await mkdir(path.resolve('test-output/transform'),{recursive:true});
+const evidence=await mkdtemp(path.resolve('test-output/transform/run-'));
+const diagnostics:unknown[]=[];let page!:import('playwright').Page;
 const tools=await discoverTools(), fixture=path.join(evidence,'color-grid.mp4');
 await runProcess(tools.ffmpeg,['-y','-v','error','-f','lavfi','-i','color=red:size=640x360:rate=10:duration=3','-vf','drawbox=x=320:y=0:w=320:h=180:color=green:t=fill,drawbox=x=0:y=180:w=320:h=180:color=blue:t=fill,drawbox=x=320:y=180:w=320:h=180:color=yellow:t=fill','-c:v','libx264','-pix_fmt','yuv420p',fixture]);
 const token=randomUUID();
@@ -17,10 +18,12 @@ try {
   await app.listen({host:'127.0.0.1',port:0});
   const address=app.server.address();assert(address&&typeof address==='object');
   const origin=`http://127.0.0.1:${address.port}`;
-  const page=await browser.newPage({viewport:{width:1440,height:1000}});
+  page=await browser.newPage({viewport:{width:1440,height:1000}});
   const errors:string[]=[];page.on('pageerror',error=>errors.push(error.message));
-  await page.request.post(`${origin}/api/v1/session`,{headers:{origin},data:{token}});
-  await page.request.post(`${origin}/api/v1/uploads`,{headers:{origin,'content-type':'application/octet-stream','x-filename':'Color grid.mp4'},data:await readFile(fixture)});
+  const session=await page.request.post(`${origin}/api/v1/session`,{headers:{origin},data:{token}});assert.equal(session.status(),200,await session.text());
+  const record=async(label:string,response:import('playwright').APIResponse,started:number)=>{const body=await response.text();diagnostics.push({at:new Date().toISOString(),label,url:response.url(),status:response.status(),elapsedMs:Date.now()-started,body});await writeFile(path.join(evidence,'requests.json'),JSON.stringify(diagnostics,null,2));assert.equal(response.status(),200,`${label}: ${response.status()} ${body}`);};
+  let requestStart=Date.now();
+  const initialUpload=await page.request.post(`${origin}/api/v1/uploads`,{headers:{origin,'content-type':'application/octet-stream','x-filename':'Color grid.mp4'},data:await readFile(fixture)});await record('Initial fixture upload',initialUpload,requestStart);requestStart=Date.now();await record('Sources after initial upload',await page.request.get(`${origin}/api/v1/sources`),requestStart);
   await page.goto(origin);
   await page.getByRole('button',{name:'Library',exact:true}).click();
   await page.getByRole('button',{name:'Edit source',exact:true}).click();
@@ -91,7 +94,8 @@ try {
   await page.screenshot({path:path.join(evidence,'crop-mobile.png')});
   const rotatedFixture=path.join(evidence,'oriented-grid.mp4');
   await runProcess(tools.ffmpeg,['-y','-v','error','-display_rotation','90','-i',fixture,'-c','copy',rotatedFixture]);
-  await page.request.post(`${origin}/api/v1/uploads`,{headers:{origin,'content-type':'application/octet-stream','x-filename':'Oriented grid.mp4'},data:await readFile(rotatedFixture)});
+  requestStart=Date.now();const orientedUpload=await page.request.post(`${origin}/api/v1/uploads`,{headers:{origin,'content-type':'application/octet-stream','x-filename':'Oriented grid.mp4'},data:await readFile(rotatedFixture)});
+  await record('Oriented fixture upload',orientedUpload,requestStart);requestStart=Date.now();await record('Sources after oriented upload',await page.request.get(`${origin}/api/v1/sources`),requestStart);
   await page.setViewportSize({width:1440,height:1000});
   await page.getByRole('button',{name:'Library',exact:true}).click();
   await page.getByRole('button',{name:'Refresh',exact:true}).click();
@@ -111,7 +115,8 @@ try {
   await page.screenshot({path:path.join(evidence,'source-orientation.png')});
   for(const viewport of [{width:1366,height:768},{width:851,height:600},{width:320,height:740},{width:844,height:390}]) {
     await page.setViewportSize(viewport);
-    await page.getByRole('navigation',{name:'Editing tools'}).getByRole('button',{name:'Transform',exact:true}).click();
+    const transformTool=page.getByRole('navigation',{name:'Editing tools'}).getByRole('button',{name:'Transform',exact:true});
+    if(await transformTool.getAttribute('aria-expanded')!=='true')await transformTool.click();
     const controls=await page.getByRole('group',{name:'Viewport transforms'}).boundingBox();
     const preview=await page.locator('.cut-preview').boundingBox();
     assert(controls&&preview&&controls.y+controls.height<=preview.y+1,'Transform controls stay above the viewport '+JSON.stringify({viewport,controls,preview}));
@@ -119,6 +124,6 @@ try {
     if(viewport.width<=850){const tools=await page.getByRole('navigation',{name:'Editing tools'}).boundingBox();assert(tools&&controls.y>=0&&controls.y+controls.height<tools.y,'Viewport controls stay above persistent tools');}
     await page.screenshot({path:path.join(evidence,`transform-${viewport.width}x${viewport.height}.png`)});
   }
-  assert.deepEqual(errors,[]);
+  assert.deepEqual(errors,[]);await writeFile(path.join(evidence,'checks.json'),JSON.stringify({passed:true,errors,diagnostics},null,2));console.log('Transform evidence: '+evidence);
   console.log('Passed: visible viewport transforms, crop drag and keyboard, single-step undo, rotation and resize sync, four-angle and source-orientation FFmpeg color-region parity, mobile access and crop targets.');
-} finally {await browser.close();await app.close();}
+} catch(error){await writeFile(path.join(evidence,'failure.json'),JSON.stringify({error:String(error),stack:(error as Error).stack,diagnostics,body:await page?.locator('body').innerText().catch(()=>undefined),sources:app.store.all('source'),artifacts:app.store.all('artifact')},null,2));await page?.screenshot({path:path.join(evidence,'failure.png')}).catch(()=>{});console.error('Transform failure evidence: '+evidence);throw error;} finally {await browser.close();await app.close();}

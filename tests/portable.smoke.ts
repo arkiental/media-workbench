@@ -63,7 +63,8 @@ try{
   await page.getByRole('navigation',{name:'Editing tools'}).getByRole('button',{name:'Cut',exact:true}).click();
   await page.getByLabel('Region 1 in timecode',{exact:true}).fill('0.5');await page.getByLabel('Region 1 in timecode',{exact:true}).press('Enter');await page.getByLabel('Region 1 out timecode',{exact:true}).fill('2.3');await page.getByLabel('Region 1 out timecode',{exact:true}).press('Enter');
   await page.getByRole('button',{name:'Done',exact:true}).click();await page.screenshot({path:path.join(run,'portable-compact-editor.png')});
-  checkpoint('Packaged compact editor fits 800x600 with a closed inspector and applies precise trims through its sheet');
+  checkpoint('Packaged compact editor fits 800x600 with completed import panel present and applies precise trims through its sheet');
+  await page.getByRole('region',{name:'File imports'}).getByRole('button',{name:'Dismiss',exact:true}).click();
   await desktop.evaluate(({BrowserWindow})=>{BrowserWindow.getAllWindows()[0].setContentSize(1320,900);});
   await page.waitForFunction(()=>innerWidth===1320&&document.querySelector('.cut-workspace')?.classList.contains('is-panel-open'));
   await page.getByRole('button',{name:'Export…',exact:true}).click();await page.getByText('Advanced encoding settings',{exact:true}).click();await page.getByLabel('Cutting strategy',{exact:true}).selectOption('exact');await page.getByLabel('Encoder preference',{exact:true}).selectOption('software');await waitForPreviews();await page.getByRole('button',{name:'Resolve export plan',exact:true}).click();await page.getByRole('heading',{name:'Ready to export',exact:true}).waitFor();await page.getByRole('button',{name:'Export using reviewed plan',exact:true}).click();await page.getByRole('button',{name:'Close export',exact:true}).click();

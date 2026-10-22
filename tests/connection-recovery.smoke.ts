@@ -1,0 +1,47 @@
+import assert from 'node:assert/strict';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import path from 'node:path';
+import { chromium } from 'playwright';
+import { createServer } from '../apps/server/src/app.ts';
+import { discoverTools, runProcess } from '../packages/media/src/index.ts';
+
+const output=path.resolve('test-output/connection-recovery');await mkdir(output,{recursive:true});
+const tools=await discoverTools(),ffmpeg=tools.ffmpeg,fixture=path.join(output,'sample.mp4');
+await runProcess(ffmpeg,['-y','-v','error','-f','lavfi','-i','testsrc2=size=1280x720:rate=30:duration=12','-c:v','libx264','-preset','ultrafast',fixture]);
+const token=randomUUID(),dataDir=path.join(output,`service-${Date.now()}`);let app=await createServer({dataDir,ownerToken:token,tools});
+await app.listen({host:'127.0.0.1',port:0});const address=app.server.address();assert(address&&typeof address==='object');
+const origin=`http://127.0.0.1:${address.port}`,browser=await chromium.launch({channel:'msedge',headless:true}),page=await browser.newPage({viewport:{width:1280,height:900}});
+const checks:string[]=[],errors:string[]=[];page.on('pageerror',error=>errors.push(error.message));
+const dialog=page.locator('dialog[aria-label="Export media"]');
+const submit=()=>dialog.getByRole('button',{name:'Export using reviewed plan'});
+const open=async()=>{await page.getByRole('button',{name:/^Export[.\u2026]$/,exact:true}).click();};
+const review=async()=>{await dialog.getByRole('button',{name:'Resolve export plan'}).click();await page.waitForFunction(()=>!(document.querySelector('[aria-label="Export using reviewed plan"]') as HTMLButtonElement)?.disabled);};
+let submissions:string[]=[],retries=0;
+page.on('request',req=>{if(req.method()!=='POST')return;if(new URL(req.url()).pathname==='/api/v1/jobs')submissions.push(req.headers()['idempotency-key']);if(req.url().endsWith('/retry'))retries++;});
+const restart=async()=>{app=await createServer({dataDir,ownerToken:token,tools});await app.listen({host:'127.0.0.1',port:address.port});};
+const connectionError=()=>page.getByRole('alert').filter({hasText:'Could not refresh media:'});
+try {
+  await page.goto(origin);await page.getByLabel('Access token').fill(token);await page.getByRole('button',{name:'Connect',exact:true}).click();
+  await page.locator('.app-header').getByRole('button',{name:'Import',exact:true}).click();await page.getByLabel('Local media').setInputFiles(fixture);await page.getByRole('heading',{name:'Library',exact:true}).waitFor();await page.getByRole('region',{name:'File imports'}).getByRole('button',{name:'Dismiss'}).click();
+  await page.getByRole('heading',{name:'sample.mp4',exact:true}).waitFor();
+  await app.close();await connectionError().waitFor({timeout:15000});await page.getByRole('heading',{name:'sample.mp4',exact:true}).waitFor();
+  await page.getByRole('button',{name:'Settings',exact:true}).click();await connectionError().waitFor();await page.getByRole('button',{name:'Library',exact:true}).click();await connectionError().waitFor();
+  await page.getByRole('button',{name:'Retry media connection',exact:true}).click();await connectionError().waitFor();
+  await page.screenshot({path:path.join(output,'offline.png')});await restart();await connectionError().waitFor({state:'hidden',timeout:15000});await page.getByRole('heading',{name:'sample.mp4',exact:true}).waitFor();
+  checks.push('Stopping only the isolated service reports failure, retains loaded media, and keeps the warning through navigation/failed retry. Successful automatic polling clears it without reload.');
+  await app.close();await connectionError().waitFor({timeout:15000});await restart();await page.getByRole('button',{name:'Retry media connection',exact:true}).press('Enter');await connectionError().waitFor({state:'hidden',timeout:15000});
+  checks.push('A second real disconnect/reconnect recovers through keyboard Retry now without a stale banner or duplicate generic error.');
+  let partial=true;await page.route('**/api/v1/jobs',async route=>{if(partial)await route.fulfill({status:503,json:{error:'Temporary jobs outage'}});else await route.continue();});
+  await page.getByRole('button',{name:'Refresh',exact:true}).click();await connectionError().filter({hasText:'Temporary jobs outage'}).waitFor();assert.equal(await page.getByRole('alert').count(),1);await page.waitForTimeout(5500);await connectionError().waitFor();
+  await page.setViewportSize({width:390,height:844});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await page.screenshot({path:path.join(output,'mobile-offline.png')});
+  partial=false;await connectionError().waitFor({state:'hidden',timeout:15000});await page.unroute('**/api/v1/jobs');
+  checks.push('A partial snapshot failure stays visible despite successful source/artifact responses; only a complete successful refresh clears it.');
+  let releaseOld!:()=>void;const oldGate=new Promise<void>(resolve=>{releaseOld=resolve;});let raceCalls=0,raceFail=true;
+  await page.route('**/api/v1/jobs',async route=>{raceCalls++;if(raceCalls===1){const response=await route.fetch();await oldGate;await route.fulfill({response});}else if(raceFail)await route.fulfill({status:503,json:{error:'Newer connection failure'}});else await route.continue();});
+  await page.getByRole('button',{name:'Refresh',exact:true}).click();await connectionError().filter({hasText:'Newer connection failure'}).waitFor({timeout:15000});releaseOld();await page.waitForTimeout(300);await connectionError().filter({hasText:'Newer connection failure'}).waitFor();
+  raceFail=false;await connectionError().waitFor({state:'hidden',timeout:15000});await page.unroute('**/api/v1/jobs');
+  checks.push('An older delayed successful snapshot cannot clear a newer failed refresh; subsequent complete recovery clears the warning.');
+  await page.setViewportSize({width:390,height:844});await page.screenshot({path:path.join(output,'recovered.png')});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));assert.deepEqual(errors,[]);
+  await writeFile(path.join(output,'checks.json'),JSON.stringify({checks,errors},null,2));console.log(JSON.stringify({checks,errors}));
+}finally{await browser.close();await app.close();}

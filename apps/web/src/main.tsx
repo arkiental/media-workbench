@@ -7,6 +7,10 @@ import { api, ApiError } from './api';
 import { readPreference, writePreference } from './drafts';
 import { Editor } from './Editor';
 import { EditorIcon } from './EditorIcon';
+import type { LibraryPosition } from './library-position';
+import type { PreviewPosition } from './LibraryPreview';
+import { ImportQueue, useImportQueue } from './ImportQueue';
+import './import-queue.css';
 import { Input, Library, SavedProjects, Presets, Integrations, Settings, Administration } from './Pages';
 import './styles.css';
 import './workspace.css';
@@ -28,6 +32,7 @@ import './link-import.css';
 import './mobile-editor.css';
 
 type Task = (work: () => Promise<unknown>) => Promise<void>;
+class MediaRefreshError extends Error {}
 const primaryTabs = ['Library', 'Editor'] as const;
 const tabIcons: Record<string, string> = { Library: 'library', Editor: 'editor' };
 
@@ -40,29 +45,72 @@ function App() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [tab, setTab] = useState<string>('Library');
   const [error, setError] = useState('');
+  const [refreshError,setRefreshError]=useState('');
+  const [mediaLoaded,setMediaLoaded]=useState(false);
+  const refreshSequence=React.useRef(0),refreshOutcome=React.useRef(0);
   const [notice, setNotice] = useState('');
+  const informationalNotice=/^(Save cancelled\.|Save outcome not confirmed\.|External action cancelled\.|App finished; upload unconfirmed\.)/.test(notice);
   const [busy, setBusy] = useState(false);
   const [sourceId, setSourceId] = useState('');
   const [project, setProject] = useState<Project>();
   const [theme, setTheme] = useState(() => readPreference('mw:theme') || 'dark');
   const [settingsTab, setSettingsTab] = useState('General');
+  const [libraryFilters, setLibraryFilters] = useState({ status: 'all', query: '', kind: 'all', sort: 'newest' });
 
   useEffect(() => { document.documentElement.dataset.theme = theme; writePreference('mw:theme', theme); }, [theme]);
-  const navigate = (next: string) => { setNotice(''); setError(''); setTab(next); };
+  const previewPositions = React.useRef(new Map<string,PreviewPosition>());
+  useEffect(()=>{const available=new Set(artifacts.map(artifact=>artifact.id));for(const id of previewPositions.current.keys())if(!available.has(id))previewPositions.current.delete(id);},[artifacts]);
+  const libraryPosition = React.useRef<LibraryPosition>({scroll:0});
+  React.useLayoutEffect(()=>{if(tab!=='Library')window.scrollTo(0,0);},[tab]);
+  const navigate = (next: string, selection = { sourceId, project }) => {
+    setNotice(''); setError('');
+    if (next !== tab || selection.sourceId !== sourceId || selection.project?.id !== project?.id) {
+      history.pushState({ mw: true, tab: next, ...selection }, '');
+    }
+    setTab(next);
+  };
+  useEffect(() => {
+    const previousRestoration=history.scrollRestoration;
+    history.scrollRestoration='manual';
+    history.replaceState({ mw: true, tab: 'Library', sourceId: '' }, '');
+    const restore = (event: PopStateEvent) => {
+      const state = event.state;
+      if (!state?.mw || !['Library', 'Editor', 'Input', 'Settings'].includes(state.tab)) return;
+      setTab(state.tab); setSourceId(state.sourceId || ''); setProject(state.project);
+      setNotice(''); setError('');
+    };
+    window.addEventListener('popstate', restore);
+    return () => { window.removeEventListener('popstate', restore); history.scrollRestoration=previousRestoration; };
+  }, []);
+  useEffect(() => {
+    history.replaceState({ mw: true, tab, sourceId, project }, '');
+  }, [tab, sourceId, project]);
   const openProject = (next: Project) => {
-    setProject(next); setSourceId(next.recipe.sourceId); navigate('Editor');
+    setProject(next); setSourceId(next.recipe.sourceId); navigate('Editor', { sourceId: next.recipe.sourceId, project: next });
     writePreference('mw:last:' + caps!.user.id, JSON.stringify({ sourceId: next.recipe.sourceId, project: next }));
   };
   const snapshot = React.useRef({ sources: '', artifacts: '', jobs: '' });
   const refresh = async () => {
+    const sequence=++refreshSequence.current;
+    try {
     const [nextSources, nextArtifacts, nextJobs] = await Promise.all([api.sources(), api.artifacts(), api.jobs()]);
+    if(sequence<refreshOutcome.current)return;
+    refreshOutcome.current=sequence;
     // Polling returns identical data most of the time; skipping unchanged state avoids re-rendering the whole app.
     const next = { sources: JSON.stringify(nextSources), artifacts: JSON.stringify(nextArtifacts), jobs: JSON.stringify(nextJobs) };
     if (next.sources !== snapshot.current.sources) setSources(nextSources);
     if (next.artifacts !== snapshot.current.artifacts) setArtifacts(nextArtifacts);
     if (next.jobs !== snapshot.current.jobs) setJobs(nextJobs);
     snapshot.current = next;
+    setMediaLoaded(true);
+    setRefreshError('');
+    } catch(cause) {
+      const failure=new MediaRefreshError(`Could not refresh media: ${cause instanceof Error?cause.message:String(cause)}`);
+      if(sequence>=refreshOutcome.current){refreshOutcome.current=sequence;setRefreshError(failure.message);}
+      throw failure;
+    }
   };
+  const imports = useImportQueue(refresh);
   const connect = async () => {
     const next = await api.capabilities(); setCaps(next); setAuthNeeded(false); await refresh();
     try {
@@ -71,24 +119,25 @@ function App() {
         setSourceId(last.sourceId);
         if (last.project?.recipe?.sourceId === last.sourceId) setProject((await api.projects()).find(item => item.id === last.project.id));
         setTab('Editor');
+        history.replaceState({ mw: true, tab: 'Editor', sourceId: last.sourceId }, '');
       }
     } catch { /* A stale local preference must not prevent opening the workspace. */ }
   };
   const run: Task = async work => {
     setError(''); setNotice(''); setBusy(true);
-    try { await work(); } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    try { await work(); } catch (cause) { if(!(cause instanceof MediaRefreshError))setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setBusy(false); }
   };
   useEffect(() => { connect().catch(cause => {
     if (cause instanceof ApiError && cause.status === 401) setAuthNeeded(true);
-    else setError(cause.message);
+    else if(!(cause instanceof MediaRefreshError))setError(cause.message);
   }); }, []);
   const hasActiveJobs=jobs.some(job=>!['completed','failed','cancelled','interrupted'].includes(job.state));
   useEffect(() => {
     if (!caps) return;
     let active = true;
     let timer:number;
-    const poll=async()=>{try{await refresh();}catch(cause){if(active)setError(`Could not refresh media: ${cause instanceof Error?cause.message:String(cause)}`);}finally{if(active)timer=window.setTimeout(poll,hasActiveJobs?500:5000);}};
+    const poll=async()=>{try{await refresh();}catch{/* Refresh owns its connection feedback. */}finally{if(active)timer=window.setTimeout(poll,hasActiveJobs?500:5000);}};
     timer=window.setTimeout(poll,hasActiveJobs?500:5000);
     return () => { active = false; clearTimeout(timer); };
   }, [caps,hasActiveJobs]);
@@ -96,19 +145,8 @@ function App() {
   const importDropped = React.useRef<(files: File[]) => void>(() => {});
   importDropped.current = files => {
     if (!caps?.user.policy.upload) { setError('Import not permitted.'); return; }
-    void run(async () => {
-      const failed: string[] = []; let last: Source | undefined;
-      for (const [index, file] of files.entries()) {
-        setNotice(`Importing ${index + 1} of ${files.length}: ${file.name}`);
-        try {
-          if (file.size > caps.user.policy.maxInputBytes) throw new Error('File exceeds the import limit');
-          last = await api.upload(file, progress => setNotice(`Importing ${index + 1} of ${files.length}: ${file.name} — ${progress < 1 ? Math.floor(progress * 100) + '%' : 'Checking media…'}`));
-        } catch (cause) { failed.push(`${file.name}: ${cause instanceof Error ? cause.message : String(cause)}`); }
-      }
-      await refresh();
-      if (last) { setNotice(`Imported ${files.length - failed.length} of ${files.length} file${files.length === 1 ? '' : 's'}.`); setTab('Library'); } else setNotice('');
-      if (failed.length) throw new Error(failed.join(' · '));
-    });
+    if (imports.active) { setNotice('An import is already running. Wait for it to finish or stop it before adding files.'); return; }
+    void imports.start(files, caps.user.policy.maxInputBytes);
   };
   useEffect(() => {
     const hasFiles = (event: DragEvent) => Array.from(event.dataTransfer?.types || []).includes('Files');
@@ -126,7 +164,7 @@ function App() {
     return () => { window.removeEventListener('dragenter', enter); window.removeEventListener('dragover', over); window.removeEventListener('dragleave', leave); window.removeEventListener('drop', drop); };
   }, []);
   const edit = (id: string) => {
-    setProject(undefined); setSourceId(id); navigate('Editor');
+    setProject(undefined); setSourceId(id); navigate('Editor', { sourceId: id, project: undefined });
     writePreference('mw:last:' + caps!.user.id, JSON.stringify({ sourceId: id }));
   };
 
@@ -165,11 +203,13 @@ function App() {
       </div>
     </header>
     <main id="workspace-content" tabIndex={-1} data-page={tab} className={editing ? 'editor-main page-content' : 'page-content'} aria-busy={busy}>
+      <ImportQueue queue={imports} maxBytes={caps.user.policy.maxInputBytes} openLibrary={() => navigate('Library')}/>
+      {refreshError&&<div role="alert" className="error"><EditorIcon name="alert" size={18}/><span>{refreshError} Media may be out of date. Retrying automatically.</span><button aria-label="Retry media connection" disabled={busy} onClick={()=>void run(refresh)}>Retry now</button></div>}
       {error && <div role="alert" className="error"><EditorIcon name="alert" size={18}/><span>{error}</span><button aria-label="Dismiss error" onClick={() => setError('')}>Dismiss</button></div>}
-      {notice && <p role="status" className="notice"><EditorIcon name="saved" size={18} tone="ok"/><span>{notice}</span>{editing&&<button aria-label="Dismiss notification" onClick={()=>setNotice('')}>Dismiss</button>}</p>}
-      {tab === 'Input' && <Input caps={caps} run={run} refresh={refresh} done={()=>navigate('Library')} setNotice={setNotice} />}
+      {notice && <p role="status" className={informationalNotice?'notice notice-info':'notice'}><EditorIcon name={informationalNotice?'info':'saved'} size={18} tone={informationalNotice?'info':'ok'}/><span>{notice}</span>{editing&&<button aria-label="Dismiss notification" onClick={()=>setNotice('')}>Dismiss</button>}</p>}
+      {tab === 'Input' && <Input importing={imports.active} importFiles={files => void imports.start(files, caps.user.policy.maxInputBytes).then(complete => { if (complete) setTab(current => current === 'Input' ? 'Library' : current); })} caps={caps} run={run} refresh={refresh} done={()=>navigate('Library')} setNotice={setNotice} />}
       {tab === 'Library' && <><div className="page-heading"><div><h1>Library</h1><p>Your videos and their progress, together.</p></div><button onClick={() => void run(refresh)} disabled={busy}><EditorIcon name="refresh" size={16}/>Refresh</button></div>
-        <Library jobs={jobs} onImport={()=>navigate('Input')} sources={sources} artifacts={artifacts} run={run} refresh={refresh} edit={edit} setNotice={setNotice} /><details className="library-projects"><summary>Saved projects</summary><SavedProjects run={run} onProject={openProject} /></details></>}
+        <Library previewPositions={previewPositions.current} position={libraryPosition} filters={libraryFilters} setFilters={setLibraryFilters} canProcess={caps.user.policy.process} jobs={jobs} onImport={()=>navigate('Input')} sources={sources} artifacts={artifacts} run={run} refresh={refresh} edit={edit} setNotice={setNotice} /><details className="library-projects"><summary>Saved projects</summary><SavedProjects mediaLoaded={mediaLoaded} sources={sources} artifacts={artifacts} ownerId={caps.user.id} onProject={openProject} /></details></>}
       {tab === 'Editor' && (editing ? <Editor jobs={jobs} key={sourceId + '-' + (project?.id || '')} source={selected} artifact={selectedArtifact} sources={sources} artifacts={artifacts} caps={caps} project={project} run={run} refresh={refresh} setNotice={setNotice} />
         : <section className="empty-state editor-empty"><span className="empty-glyph" aria-hidden="true"><EditorIcon name="editor" size={28}/></span><span className="empty-label">Editor</span><h1>Choose a video to edit</h1><p>Import a file or pick something from your library to start cutting, captioning and exporting.</p><div className="actions"><button className="primary" onClick={() => navigate('Input')}><EditorIcon name="plus" size={17}/>Import</button><button onClick={() => navigate('Library')}><EditorIcon name="library" size={17}/>Open library</button></div></section>)}
       {tab === 'Settings' && <><div className="page-heading"><div><h1>Settings</h1></div></div>

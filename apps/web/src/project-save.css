@@ -1,0 +1,13 @@
+.project-save-dialog { width:min(480px,calc(100vw - 32px)); max-height:calc(100dvh - 32px); overflow:auto; padding:24px; border:1px solid var(--line,#444); border-radius:12px; }
+.project-save-dialog::backdrop { background:#000a; }
+.project-save-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.project-save-heading h2 { margin:0; }
+.project-save-dialog p { line-height:1.5; overflow-wrap:anywhere; }
+.project-save-name { display:grid; gap:8px; }
+.project-save-name input { width:100%; min-width:0; }
+.project-save-actions { display:flex; flex-wrap:wrap; gap:8px; margin:16px 0; }
+.project-save-dialog button { min-height:44px; }
+.project-save-download { margin-top:16px; }
+.project-save-trigger { white-space:nowrap; min-height:44px; }
+@media(max-width:850px) { .project-save-dialog { padding:18px; } .project-save-trigger span { display:none; } .project-save-trigger { min-width:44px; padding:8px!important; } }
+.project-save-copy { display:grid; gap:12px; border-top:1px solid var(--line,#444); padding-top:16px; } .project-save-copy > button { justify-self:start; }

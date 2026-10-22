@@ -1,0 +1,57 @@
+import assert from 'node:assert/strict';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { randomUUID, createHash } from 'node:crypto';
+import path from 'node:path';
+import { chromium } from 'playwright';
+import { createServer } from '../apps/server/src/app.ts';
+import { discoverTools, runProcess } from '../packages/media/src/index.ts';
+import { RecipeSchema, ExportSchema, type Artifact, type Job } from '../packages/contracts/src/index.ts';
+
+const output=path.resolve('test-output/export-naming');await mkdir(output,{recursive:true});
+const tools=await discoverTools(),ffmpeg=tools.ffmpeg,fixture=path.join(output,'sample.mp4'),dataDir=path.join(output,`service-${Date.now()}`),token=randomUUID();
+await runProcess(ffmpeg,['-y','-v','error','-f','lavfi','-i','testsrc2=size=320x180:rate=10:duration=2','-c:v','libx264','-preset','ultrafast',fixture]);
+let app=await createServer({dataDir,ownerToken:token,tools,encoders:[]});await app.listen({host:'127.0.0.1',port:0});const address=app.server.address();assert(address&&typeof address==='object');
+const port=address.port,origin=`http://127.0.0.1:${port}`,browser=await chromium.launch({channel:'msedge',headless:true}),page=await browser.newPage({viewport:{width:1280,height:900}});
+const checks:string[]=[],errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
+const dialog=page.locator('dialog[aria-label="Export media"]'),name=dialog.getByLabel('Export name',{exact:true}),filename=dialog.getByLabel('Export filename',{exact:true});
+const review=async()=>{await dialog.getByRole('button',{name:'Resolve export plan'}).click();await page.waitForFunction(()=>!(document.querySelector('[aria-label="Export using reviewed plan"]') as HTMLButtonElement).disabled);};
+const ready=async()=>{await dialog.getByRole('status').filter({hasText:/^Export ready$/}).waitFor({timeout:60000});};
+const edit=async(file:string)=>{await page.locator('.app-header').getByRole('button',{name:'Library',exact:true}).click();await page.getByLabel('Search media',{exact:true}).fill(file);await page.locator('.media-card').filter({has:page.getByRole('heading',{name:file,exact:true})}).getByRole('button',{name:'Edit source',exact:true}).click();await page.getByRole('button',{name:/^Export[.\u2026]$/}).click();};
+const jobs=()=>app.store.jobs();
+const download=async(expected:string)=>{const waiting=page.waitForEvent('download');await dialog.getByRole('link',{name:'Download exported file'}).click();const item=await waiting;assert.equal(item.suggestedFilename(),expected);const file=await item.path();assert.ok(file);return createHash('sha256').update(await readFile(file)).digest('hex');};
+try {
+  await page.goto(origin);await page.getByLabel('Access token').fill(token);await page.getByRole('button',{name:'Connect',exact:true}).click();
+  await page.locator('.app-header').getByRole('button',{name:'Import',exact:true}).click();const buffer=await readFile(fixture);await page.getByLabel('Local media').setInputFiles([{name:'Road trip.MOV',mimeType:'video/mp4',buffer},{name:'Interview.mp4',mimeType:'video/mp4',buffer}]);
+  await page.getByRole('heading',{name:'Library',exact:true}).waitFor();await page.getByRole('region',{name:'File imports'}).getByRole('button',{name:'Dismiss'}).click();
+  await edit('Road trip.MOV');assert.equal(await name.inputValue(),'Road trip-edit');assert.equal(await filename.textContent(),'Road trip-edit.mp4');await review();await dialog.getByRole('button',{name:'Export using reviewed plan'}).click();await ready();
+  const first=jobs().at(-1)!;assert.equal(first.request.type,'export');const firstHash=await download('Road trip-edit.mp4');
+  checks.push('Source-based default survives real export and produces the same download filename.');
+  await name.fill('Road trip-edit.MP4');await review();await dialog.getByRole('button',{name:'Export using reviewed plan'}).click();await ready();await download('Road trip-edit (2).mp4');assert.equal(jobs().length,2);
+  const firstArtifact=app.store.get<Artifact>('artifact',first.artifactId!,first.ownerId)!;assert.equal(firstArtifact.name,'Road trip-edit.mp4');assert.equal(createHash('sha256').update(await readFile(path.join(dataDir,'artifacts',first.artifactId!))).digest('hex'),firstHash);
+  checks.push('Repeated names receive a reserved numbered filename; previous UUID-backed output and its bytes remain unchanged.');
+  await name.fill("  Café's: take/one?.MP4  ");assert.equal(await filename.textContent(),"Café's_ take_one_.mp4");await review();
+  tools.ffmpeg=path.join(output,'missing-test-ffmpeg.exe');await dialog.getByRole('button',{name:'Export using reviewed plan'}).click();await dialog.getByRole('status').filter({hasText:/^Export failed$/}).waitFor({timeout:30000});
+  const failed=jobs().at(-1)!;tools.ffmpeg=ffmpeg;await dialog.getByRole('button',{name:'Retry export',exact:true}).focus();await page.keyboard.press('Enter');await ready();await download("Café's_ take_one_.mp4");assert.equal(jobs().at(-1)!.id,failed.id);
+  const request=failed.submittedRequest||failed.request;const same=await page.request.post(origin+'/api/v1/jobs',{headers:{'idempotency-key':'naming-repeat-key'},data:request});assert.equal(same.status(),202);const duplicate=await same.json();
+  const again=await page.request.post(origin+'/api/v1/jobs',{headers:{'idempotency-key':'naming-repeat-key'},data:request});assert.equal((await again.json()).id,duplicate.id);assert.equal((await again.json()).request.options.fileName,duplicate.request.options.fileName);
+  checks.push('Unicode, apostrophe, invalid filename characters and an entered extension normalize predictably. Failed-job retry keeps its name and job ID; repeated submission keys keep the reserved name.');
+  await name.fill('');assert.equal(await filename.textContent(),'Road trip-edit.mp4');await page.keyboard.press('Tab');await page.keyboard.press('Escape');await edit('Interview.mp4');assert.equal(await name.inputValue(),'Interview-edit');
+  await name.fill('Interview final.mkv');assert.equal(await filename.textContent(),'Interview final.mp4');await page.keyboard.press('Tab');await page.reload();await page.getByRole('button',{name:/^Export[.\u2026]$/}).click();assert.equal(await name.inputValue(),'Interview final.mkv');
+  await dialog.getByText('Advanced encoding settings',{exact:true}).click();await dialog.getByLabel('Container',{exact:true}).selectOption('mkv');assert.equal(await filename.textContent(),'Interview final.mkv');await review();await dialog.getByRole('button',{name:'Export using reviewed plan'}).click();await ready();await download('Interview final.mkv');
+  checks.push('Empty names fall back visibly to the source default; different sources have independent names. Draft names survive reload; container choice owns the final extension.');
+  await page.setViewportSize({width:390,height:844});await name.scrollIntoViewIfNeeded();assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await page.screenshot({path:path.join(output,'mobile-name.png')});
+  await page.keyboard.press('Escape');await page.setViewportSize({width:1280,height:900});await page.locator('.app-header').getByRole('button',{name:'Library',exact:true}).click();await page.getByLabel('Search media',{exact:true}).fill('Interview.mp4');
+  const result=page.locator('.media-card').filter({has:page.getByRole('heading',{name:'Interview final.mkv',exact:true})});await result.waitFor();await result.getByText('From Interview.mp4',{exact:true}).waitFor();await page.screenshot({path:path.join(output,'library-names.png')});
+  checks.push('Library shows output names and original-source context; source-name search finds custom-named exports. Mobile name entry fits and keyboard navigation works.');
+  const source=(await (await page.request.get(origin+'/api/v1/sources')).json()).find((s:any)=>s.name==='Interview.mp4');
+  const submit=async(fileName:string)=>{const r=await page.request.post(origin+'/api/v1/jobs',{headers:{'idempotency-key':randomUUID()},data:{type:'export',recipe:RecipeSchema.parse({sourceId:source.id,segments:[{in:0,out:1}]}),options:ExportSchema.parse({mode:'auto',fileName})}});assert.equal(r.status(),202,await r.text());return r.json() as Promise<Job>;};
+  app.store.setSetting('concurrency',0);
+  const reserved=await submit('CON.mp4');assert.equal(reserved.request.type==='export'&&reserved.request.options.fileName,'_CON.mp4');
+  const empty=await submit('   ');assert.equal(empty.request.type==='export'&&empty.request.options.fileName,'Interview-edit.mp4');
+  const longName='🎬'.repeat(100)+'.mp4',longA=await submit(longName),longB=await submit(longName);assert.notEqual(longA.request.type==='export'&&longA.request.options.fileName,longB.request.type==='export'&&longB.request.options.fileName);
+  await app.close();app=await createServer({dataDir,ownerToken:token,tools,encoders:[]});await app.listen({host:'127.0.0.1',port});
+  const recovered=app.store.job(longB.id)!;assert.deepEqual(recovered.request,longB.request);assert.equal(app.store.get<Artifact>('artifact',first.artifactId!,first.ownerId)!.name,'Road trip-edit.mp4');
+  checks.push('Reserved device names, blank names, and long Unicode names normalize without losing extensions or revision suffixes. Job names and completed filenames survive a real service restart.');
+  assert.deepEqual(errors,[]);await writeFile(path.join(output,'checks.json'),JSON.stringify({checks,errors},null,2));console.log(JSON.stringify({checks,errors},null,2));
+}catch(error){await page.screenshot({path:path.join(output,'failure.png')});throw error;}
+finally{tools.ffmpeg=ffmpeg;await browser.close();await app.close();}

@@ -1,10 +1,11 @@
-import React from 'react';
+import React, {useEffect,useRef,useState} from 'react';
 import { EditorIcon } from './EditorIcon';
 import type { Artifact, Recipe, Source } from '../../../packages/contracts/src/index';
 
 type Props = {
   recipe: Recipe;
   audio: (patch: Partial<Recipe['audio']>) => void;
+  previewAudio: (patch?: Partial<Recipe['audio']>) => void;
   artifact?: Artifact;
   sources: Source[];
   artifacts: Artifact[];
@@ -13,17 +14,40 @@ type Props = {
 
 const fill = (value: number, min: number, max: number) => ({ '--p': `${Math.max(0, Math.min(1, (value - min) / (max - min))) * 100}%` }) as React.CSSProperties;
 
-function Slider({ label, value, min, max, step, unit, format, onChange, numberLabel }: {
-  label: string; value: number; min: number; max: number; step: number; unit: string; format: (v: number) => string; onChange: (v: number) => void; numberLabel: string;
+function AudioNumber({label,value,max,onCommit}:{label:string;value:number;max:number;onCommit:(value:number)=>void}){
+  const [draft,setDraft]=useState(String(value));const focused=useRef(false),cancelled=useRef(false);
+  useEffect(()=>{if(!focused.current)setDraft(String(value));},[value]);
+  const commit=()=>{
+    const parsed=Number(draft),next=!cancelled.current&&draft.trim()&&Number.isFinite(parsed)?Math.max(0,Math.min(max,parsed)):value;
+    focused.current=false;setDraft(String(next));if(next!==value)onCommit(next);
+  };
+  return <input aria-label={label} type="number" min={0} max={max} step="any" value={draft} onFocus={()=>{focused.current=true;cancelled.current=false;}} onChange={event=>setDraft(event.target.value)} onBlur={commit}
+    onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();event.currentTarget.blur();}if(event.key==='Escape'){event.preventDefault();event.stopPropagation();cancelled.current=true;event.currentTarget.blur();}}}/>;
+}
+
+const rangeKeys=new Set(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End','PageUp','PageDown']);
+function Slider({ label, value, min, max, numberMax, step, unit, format, onChange, onPreview, numberLabel }: {
+  label: string; value: number; min: number; max: number; numberMax:number; step: number; unit: string; format: (v: number) => string; onChange: (v: number) => void; onPreview:(value?:number)=>void; numberLabel: string;
 }) {
+  const [pending,setPending]=useState<number>();
+  const gesture=useRef<{value:number;pointer?:number;cancelled?:boolean}|undefined>(undefined);
+  const begin=(pointer?:number)=>{if(!gesture.current)gesture.current={value,pointer};};
+  const finish=(commit:boolean)=>{const current=gesture.current;gesture.current=undefined;setPending(undefined);onPreview();if(commit&&current&&!current.cancelled&&current.value!==value)onChange(current.value);};
+  const cancel=()=>{if(gesture.current){gesture.current.cancelled=true;setPending(undefined);onPreview();}else finish(false);};
+  const shown=pending??value;
   return <div className="audio-slider">
-    <div className="audio-slider-head"><span>{label}</span><span className="audio-value">{format(value)}</span></div>
-    <input type="range" aria-label={`${label} slider`} min={min} max={max} step={step} value={Math.min(max, value)} style={fill(value, min, max)} onChange={event => onChange(Number(event.target.value))} />
-    <label className="audio-number"><input aria-label={numberLabel} type="number" min={0} step="any" value={value} onChange={event => onChange(event.target.valueAsNumber || 0)} /><em>{unit}</em></label>
+    <div className="audio-slider-head"><span>{label}</span><span className="audio-value">{format(shown)}</span></div>
+    <input type="range" aria-label={`${label} slider`} min={min} max={max} step={step} value={Math.min(max, shown)} style={fill(shown, min, max)}
+      onPointerDown={event=>{begin(event.pointerId);event.currentTarget.setPointerCapture(event.pointerId);}}
+      onPointerUp={()=>finish(true)} onPointerCancel={()=>finish(false)} onLostPointerCapture={()=>{if(gesture.current?.pointer!==undefined)finish(false);}}
+      onKeyDown={event=>{if(rangeKeys.has(event.key))begin();if(event.key==='Escape'){event.preventDefault();event.stopPropagation();cancel();}}}
+      onKeyUp={event=>{if(rangeKeys.has(event.key))finish(true);}} onBlur={()=>finish(true)}
+      onChange={event=>{const next=Number(event.target.value);if(gesture.current?.cancelled)return;if(gesture.current){gesture.current.value=next;setPending(next);onPreview(next);}else onChange(next);}} />
+    <label className="audio-number"><AudioNumber label={numberLabel} value={shown} max={numberMax} onCommit={onChange}/><em>{unit}</em></label>
   </div>;
 }
 
-export function AudioInspector({ recipe, audio, artifact, sources, artifacts, duration }: Props) {
+export function AudioInspector({ recipe, audio, previewAudio, artifact, sources, artifacts, duration }: Props) {
   const tracks = artifact?.media.streams.filter(stream => stream.type === 'audio') || [];
   const mode = recipe.audio.mode;
   const removed = mode === 'mute';
@@ -68,7 +92,7 @@ export function AudioInspector({ recipe, audio, artifact, sources, artifacts, du
     {!removed && <>
       <div className="audio-card">
         <div className="audio-card-head">Level</div>
-        <Slider label="Volume" value={recipe.audio.volume} min={0} max={2} step={.01} unit="×" numberLabel="Volume multiplier" format={v => `${Math.round(v * 100)}%`} onChange={v => audio({ volume: Math.max(0, Math.min(10, v)) })} />
+        <Slider label="Volume" value={recipe.audio.volume} min={0} max={2} numberMax={10} step={.01} unit="×" onPreview={volume=>previewAudio(volume===undefined?undefined:{volume})} numberLabel="Volume multiplier" format={v => `${Math.round(v * 100)}%`} onChange={v => audio({ volume: Math.max(0, Math.min(10, v)) })} />
         <div className="audio-quick" role="group" aria-label="Volume presets">
           {[[0, 'Mute'], [.5, '50%'], [1, '100%'], [1.5, '150%']].map(([value, text]) => <button key={text} aria-pressed={recipe.audio.volume === value} onClick={() => audio({ volume: value as number })}>{text}</button>)}
         </div>
@@ -77,8 +101,8 @@ export function AudioInspector({ recipe, audio, artifact, sources, artifacts, du
 
       <div className="audio-card">
         <div className="audio-card-head">Fades</div>
-        <Slider label="Fade in" value={recipe.audio.fadeIn} min={0} max={fadeMax} step={.1} unit="s" numberLabel="Fade in (s)" format={v => `${v.toFixed(1)} s`} onChange={v => audio({ fadeIn: Math.max(0, Math.min(60, v)) })} />
-        <Slider label="Fade out" value={recipe.audio.fadeOut} min={0} max={fadeMax} step={.1} unit="s" numberLabel="Fade out (s)" format={v => `${v.toFixed(1)} s`} onChange={v => audio({ fadeOut: Math.max(0, Math.min(60, v)) })} />
+        <Slider label="Fade in" value={recipe.audio.fadeIn} min={0} max={fadeMax} numberMax={60} step={.1} unit="s" onPreview={fadeIn=>previewAudio(fadeIn===undefined?undefined:{fadeIn})} numberLabel="Fade in (s)" format={v => `${v.toFixed(1)} s`} onChange={v => audio({ fadeIn: Math.max(0, Math.min(60, v)) })} />
+        <Slider label="Fade out" value={recipe.audio.fadeOut} min={0} max={fadeMax} numberMax={60} step={.1} unit="s" onPreview={fadeOut=>previewAudio(fadeOut===undefined?undefined:{fadeOut})} numberLabel="Fade out (s)" format={v => `${v.toFixed(1)} s`} onChange={v => audio({ fadeOut: Math.max(0, Math.min(60, v)) })} />
       </div>
 
       <label className="audio-switch">

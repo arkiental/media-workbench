@@ -1,6 +1,8 @@
 'use strict';
 const { contextBridge,ipcRenderer }=require('electron');
 contextBridge.exposeInMainWorld('mediaWorkbench',Object.freeze({
+  workspaceGet:key=>ipcRenderer.sendSync('native:workspace',{action:'get',key}),
+  workspaceSet:(key,value,expected)=>ipcRenderer.sendSync('native:workspace',{action:'set',key,value,expected}),
   capabilities:()=>ipcRenderer.invoke('native:capabilities'),
   chooseDownloadFolder:()=>ipcRenderer.invoke('native:choose-download-folder'),
   copyFile:id=>ipcRenderer.invoke('native:copy-file',id),

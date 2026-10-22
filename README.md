@@ -6,6 +6,8 @@ The UI combines files and jobs in **Library**, newest first, with selection and 
 
 New editing sessions use **Cutting → Fast when possible**: simple trims copy compressed streams and can join kept sections without encoding. Existing saved export choices are preserved; select this mode to switch an older draft to fast trimming. Cuts expand to keyframes; choose **Exact frame cut** for precise edges. Filters, compression targets and incompatible MP4 streams still require encoding. Fast copies check streams, duration and short decodes at the cut edges. Enable **Fully verify lossless exports (slower)** in Review export for full decoded-frame comparison and output decoding. See [fast trim evidence](docs/FAST_TRIM.md).
 
+The current workflow reliability update adds durable desktop drafts, recoverable import/playback/export flows, named project/preset saving, retained Library navigation and useful gesture/typing Undo. See [editing reliability changes, validation and known limits](docs/UX_RELIABILITY_2026-10-22.md).
+
 ## Run on Windows
 
 The video editor has a compact touch layout with a single tool rail, collapsible sheets, timeline panning, pinch zoom and a full-source navigator. See [mobile editor controls and checks](docs/MOBILE_EDITOR.md).

@@ -56,8 +56,8 @@ try{
   await start.click();await dialog.getByRole('alert').filter({hasText:/Failed to fetch|Load failed|NetworkError/}).waitFor();
   assert.equal(app.store.jobs(imported.json().ownerId).length,1);
   await dialog.getByRole('button',{name:'Close preview',exact:true}).click();await start.click();await video.waitFor({timeout:45000});
-  assert.equal(retryKeys.length,2);assert.equal(retryKeys[0],retryKeys[1]);assert.equal(app.store.jobs(imported.json().ownerId).length,1);await page.unroute('**/api/v1/jobs');
-  await page.waitForFunction(()=>document.querySelector('video')!.readyState>=2);checks.push('A lost submission response retries the same durable job without a duplicate render');
+  assert.equal(retryKeys.length,1);assert.equal(app.store.jobs(imported.json().ownerId).length,1);await page.unroute('**/api/v1/jobs');
+  await page.waitForFunction(()=>document.querySelector('video')!.readyState>=2);checks.push('A lost submission response reconnects the accepted durable job without another POST');
   await video.evaluate((element:HTMLVideoElement)=>{element.pause();(element as any).originalPlay=element.play;element.play=()=>Promise.reject(new DOMException('Playback blocked','NotAllowedError'));});
   await dialog.getByRole('button',{name:'Play from start',exact:true}).click();await dialog.getByRole('alert').filter({hasText:'Playback did not start'}).waitFor();
   await video.evaluate((element:HTMLVideoElement)=>{element.play=(element as any).originalPlay;});await dialog.getByRole('button',{name:'Play from start',exact:true}).click();
@@ -74,5 +74,5 @@ try{
   await page.route('**/api/v1/export/plan',async route=>{pendingPlan();await unmountGate;await route.continue().catch(()=>{});});await start.click();await pending;await page.evaluate('window.fixture.unmount()');releaseUnmount();await page.unroute('**/api/v1/export/plan');await page.waitForTimeout(150);
   assert.equal(app.store.jobs(imported.json().ownerId).length,2);assert.deepEqual(pageErrors,[]);checks.push('Unmounting during planning cancels the request, submits no job and raises no browser errors');
   await writeFile(path.join(output,'result.json'),JSON.stringify({testedAt:new Date().toISOString(),checks,pageErrors,jobCount:2},null,2));console.log(JSON.stringify({output,checks:checks.length,pageErrors}));
-}catch(error){await writeFile(path.join(output,'failure.json'),JSON.stringify({error:String(error),checks,pageErrors},null,2));throw error;}
+}catch(error){if(page)await writeFile(path.join(output,'page.html'),await page.content());await writeFile(path.join(output,'failure.json'),JSON.stringify({error:String(error),checks,pageErrors},null,2));throw error;}
 finally{await browser?.close();await app.close();}

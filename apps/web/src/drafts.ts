@@ -35,6 +35,23 @@ export function writeDraft(storage:DraftStorage|undefined,key:string,draft:Edito
   const raw=JSON.stringify(draft);memory.set(key,raw);
   try{if(!storage)return false;storage.setItem(key,raw);return true;}catch{return false;}
 }
-export function browserStorage():Storage|undefined {try{return window.localStorage;}catch{return;}}
+let desktopAdapter:DraftStorage|undefined;
+export function browserStorage():DraftStorage|undefined {
+  try {
+    const native=window.mediaWorkbench;
+    if(native?.workspaceGet&&native.workspaceSet){
+      if(!desktopAdapter){
+        const versions=new Map<string,string|null>();
+        desktopAdapter={getItem(key){const result=native.workspaceGet!(key);if(result.error)throw Error(result.error);const value=result.value??null;versions.set(key,value);return value??window.localStorage.getItem(key);},setItem(key,value){
+          if(!versions.has(key)){const result=native.workspaceGet!(key);if(result.error)throw Error(result.error);versions.set(key,result.value??null);}
+          const result=native.workspaceSet!(key,value,versions.get(key)!);if(!result.ok)throw Error(result.error||'Workspace draft could not be saved');versions.set(key,value);
+          try{window.localStorage.setItem(key,value);}catch{}
+        }};
+      }
+      return desktopAdapter;
+    }
+    return window.localStorage;
+  }catch{return;}
+}
 export function readPreference(key:string):string|undefined {try{return browserStorage()?.getItem(key)||undefined;}catch{return;}}
 export function writePreference(key:string,value:string):void {try{browserStorage()?.setItem(key,value);}catch{}}

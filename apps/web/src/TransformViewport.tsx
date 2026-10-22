@@ -90,12 +90,25 @@ export const even = (value:number) => Math.max(2,Math.min(7680,Math.round(value/
 export const presets = [['100%',1],['75%',.75],['50%',.5],['25%',.25]] as const;
 
 export function SizeInput({label,value,onCommit}:{label:string;value:number;onCommit:(value:number)=>void}) {
-  const [text,setText] = useState(String(value));
-  useEffect(()=>setText(String(value)),[value]);
-  const commit = () => { const parsed=Number(text); if(Number.isFinite(parsed)&&parsed>0)onCommit(even(parsed)); else setText(String(value)); };
-  return <input aria-label={label} title={label} inputMode="numeric" value={text} onChange={event=>setText(event.target.value.replace(/\D/g,''))} onBlur={commit} onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();commit();}if(event.key==='Escape'){setText(String(value));event.currentTarget.blur();}}}/>;
+  const [text,setText] = useState<string>();
+  const cancelled = useRef(false);
+  useEffect(()=>setText(undefined),[value]);
+  const commit = () => {
+    if(!cancelled.current && text!==undefined && text.trim()) {
+      const parsed=Number(text);
+      if(Number.isFinite(parsed)&&parsed>0&&even(parsed)!==value)onCommit(even(parsed));
+    }
+    cancelled.current=false;
+    setText(undefined);
+  };
+  return <input aria-label={label} title={label} inputMode="numeric" value={text??String(value)} onFocus={()=>{cancelled.current=false;}} onChange={event=>setText(event.target.value.replace(/\D/g,''))} onBlur={commit} onKeyDown={event=>{
+    if(event.key==='Enter'||event.key==='Escape'){
+      event.preventDefault();event.stopPropagation();
+      if(event.key==='Escape')cancelled.current=true;
+      event.currentTarget.blur();
+    }
+  }}/>;
 }
-
 export function ViewportTransformControls({recipe,change,width,height,sourceRotation,editingCrop,setEditingCrop}:{recipe:Recipe;change:(recipe:Recipe)=>void;width:number;height:number;sourceRotation:number;editingCrop:boolean;setEditingCrop:(value:boolean)=>void}) {
   const [locked,setLocked] = useState(true);
   const output = outputSize(recipe,width,height,sourceRotation);

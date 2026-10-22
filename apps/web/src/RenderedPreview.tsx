@@ -2,7 +2,9 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { Artifact, ExportOptions, Job, Plan, Recipe } from '../../../packages/contracts/src/index';
 import { bytes } from '../../../packages/ui/src/index';
-import { api, contentUrl } from './api';
+import { api, request, contentUrl, downloadUrl } from './api';
+import { reviewExportPlan } from './export-plan';
+import { previewKey, recoverPreview, rememberPreview } from './rendered-preview-state';
 import { EditorIcon, type IconTone } from './EditorIcon';
 import { desktopBridge, browserCapabilities } from '../../../packages/platform/src/index';
 
@@ -12,9 +14,10 @@ type Native=Record<string,{state:string;reason?:string}>;
 type Props={recipe:Recipe;options:ExportOptions;presetId?:string;jobs:Job[];artifacts:Artifact[];allowed:boolean;refresh:()=>Promise<void>;onOpen:()=>void;dialogHost:HTMLElement|null};
 
 export function RenderedPreview({recipe,options,presetId,jobs,artifacts,allowed,refresh,onOpen,dialogHost}:Props) {
-  const key=JSON.stringify({recipe,options,presetId});
+  const key=previewKey({type:'export',recipe,options,...(presetId?{presetId}:{})});
   const currentKey=useRef(key);currentKey.current=key;
-  const [render,setRender]=useState<{key:string;jobId:string;plan:Plan}>();
+  const [render,setRender]=useState<{key:string;jobId:string;plan?:Plan}>();
+  const [preparation,setPreparation]=useState('Checking saved previews.');
   const [open,setOpen]=useState(false),[preparing,setPreparing]=useState(false),[error,setError]=useState(''),[playError,setPlayError]=useState(''),[cancelling,setCancelling]=useState(false);
   const busy=useRef(false),alive=useRef(true),dialog=useRef<HTMLDialogElement>(null),video=useRef<HTMLVideoElement>(null),autoplay=useRef(false);
   const planning=useRef<AbortController|null>(null),submissionAttempt=useRef<{key:string;idempotencyKey:string}|null>(null);
@@ -25,11 +28,11 @@ export function RenderedPreview({recipe,options,presetId,jobs,artifacts,allowed,
   const output=job?.state==='completed'?artifacts.find(a=>a.id===job.artifactId&&a.validated):undefined;
   const currentOutput=useRef(output?.id);currentOutput.current=output?.id;
   const stale=!!render&&render.key!==key;
-  const working=!!render&&(!job||!terminal.has(job.state));
+  const working=!!job&&!terminal.has(job.state);
   useEffect(()=>{alive.current=true;return()=>{alive.current=false;planning.current?.abort();};},[]);
   useEffect(()=>{planning.current?.abort(new Error('The edit changed while preparing. Preview again to render the current edit.'));if(stale){autoplay.current=false;video.current?.pause();}},[key]);
   const show=()=>{onOpen();setOpen(true);setPlayError('');if(!dialog.current?.open)dialog.current?.showModal();};
-  const close=()=>{autoplay.current=false;video.current?.pause();setOpen(false);dialog.current?.close();};
+  const close=()=>{planning.current?.abort(new Error('Preview preparation cancelled.'));autoplay.current=false;video.current?.pause();setOpen(false);dialog.current?.close();};
   const play=async()=>{
     if(!video.current||stale||!dialog.current?.open)return;
     const player=video.current,playKey=key;
@@ -37,26 +40,42 @@ export function RenderedPreview({recipe,options,presetId,jobs,artifacts,allowed,
     const current=()=>alive.current&&video.current===player&&currentKey.current===playKey&&dialog.current?.open;
     try{await player.play();if(current())setPlayError('');}catch{if(current())setPlayError('Playback did not start. Press Play below, or download this rendered file if your browser does not support its format.');}
   };
-  const start=async()=>{
+  const start=async(force=false)=>{
     if(busy.current){show();return;}
     show();setError('');autoplay.current=true;
     if(working){if(stale)autoplay.current=false;return;}
     if(render?.key===key&&output){if(video.current){video.current.currentTime=0;await play();}return;}
     // Never substitute a lower-quality proxy: these are the actual requested export settings.
-    busy.current=true;setPreparing(true);setRender(undefined);setFileError('');setCopied('');window.clearTimeout(copiedTimer.current);
+    busy.current=true;setPreparing(true);setPreparation('Checking saved previews.');setFileError('');setCopied('');window.clearTimeout(copiedTimer.current);
     const snapshot={recipe,options,...(presetId?{presetId}:{})},snapshotKey=key;
     const controller=new AbortController();planning.current=controller;
     try{
-      const plan=await api.plan(recipe,options,presetId,{signal:controller.signal});
-      planning.current=null;
+      const [savedJobs,savedArtifacts]=await Promise.all([
+        request<Job[]>('/jobs',{signal:controller.signal}),
+        request<Artifact[]>('/artifacts',{signal:controller.signal})
+      ]);
+      if(controller.signal.aborted)throw controller.signal.reason;
+      const recovered=recoverPreview(recipe.sourceId,snapshotKey,savedJobs);
+      if(recovered){
+        const savedJob=savedJobs.find(item=>item.id===recovered.jobId);
+        const reusable=savedJob&&(!terminal.has(savedJob.state)||savedJob.state==='completed'&&savedArtifacts.some(item=>item.id===savedJob.artifactId&&item.validated));
+        submissionAttempt.current=null;
+        if(!force||reusable){setRender(recovered);rememberPreview(recipe.sourceId,recovered);await refresh();return;}
+      }
+      await refresh();
+      if(controller.signal.aborted)throw controller.signal.reason;
+      setRender(undefined);setPreparation('Preparing export preview.');
+      const plan=await reviewExportPlan(recipe,options,presetId,controller.signal,()=>setPreparation('Waiting for other previews to finish. Retrying automatically.'));
+      if(controller.signal.aborted)throw controller.signal.reason;
       if(!alive.current||currentKey.current!==snapshotKey){if(alive.current)setError('The edit changed while preparing. Preview again to render the current edit.');return;}
       // A lost response can still leave a durable job. Explicit retries recover that job.
       if(submissionAttempt.current?.key!==snapshotKey)submissionAttempt.current={key:snapshotKey,idempotencyKey:crypto.randomUUID()};
       const submitted=await api.submit({type:'export',...snapshot},submissionAttempt.current.idempotencyKey);
       submissionAttempt.current=null;
+      rememberPreview(recipe.sourceId,{key:snapshotKey,jobId:submitted.id});
       if(alive.current)setRender({key:snapshotKey,jobId:submitted.id,plan});
       if(alive.current)await refresh();
-    }catch(e){if(alive.current)setError(e instanceof Error?e.message:String(e));}
+    }catch(e){if(alive.current)setError(e instanceof Error?e.message.replaceAll('Review settings','Render again'):String(e));}
     finally{if(planning.current===controller)planning.current=null;busy.current=false;if(alive.current)setPreparing(false);}
   };
   const cancel=async()=>{
@@ -75,7 +94,7 @@ export function RenderedPreview({recipe,options,presetId,jobs,artifacts,allowed,
   };
   const plan=job?.plan||render?.plan;
   const failed=!!job&&['failed','cancelled','interrupted'].includes(job.state);
-  const missing=job?.state==='completed'&&!output;
+  const missing=!!render&&!job||job?.state==='completed'&&!output;
   const ready=!!output&&!stale;
   const processing=plan?.strategy==='copy'?'Copying':'Rendering';
   const status:[string,IconTone|'muted']=stale?['Outdated','warn']:ready?['Ready','ok']:missing?['Unavailable','warn']:failed?[job!.state==='failed'?'Failed':job!.state==='cancelled'?'Cancelled':'Interrupted','danger']:preparing||working?[processing,'info']:['Not rendered','muted'];
@@ -97,16 +116,18 @@ export function RenderedPreview({recipe,options,presetId,jobs,artifacts,allowed,
           :<div className="rp-placeholder">
             {(preparing||working)&&!failed?<>
               <span className="rp-spinner" aria-hidden="true"/>
-              <strong role="status">{preparing?'Preparing export preview…':`${job?.state==='processing'?processing:stateLabels[job?.state||'queued']||processing}${progress>0?` · ${Math.floor(progress*100)}%`:''}`}</strong>
+              <strong role="status">{preparing?preparation:`${job?.state==='processing'?processing:stateLabels[job?.state||'queued']||processing}${progress>0?` · ${Math.floor(progress*100)}%`:''}`}</strong>
               <progress aria-label="Preview render progress" max={1} value={progress}/>
               {job?.message&&<small>{job.message}</small>}
+              {preparing&&<button onClick={()=>planning.current?.abort(new Error('Preview preparation cancelled.'))}>Cancel preparation</button>}
               {working&&<button disabled={cancelling||job?.state==='cancelling'} onClick={()=>void cancel()}><EditorIcon name="cancel" size={16}/>Cancel preview render</button>}
             </>:failed||missing?<>
               <EditorIcon name="alert" size={28} tone="danger"/>
-              <strong role="alert">{missing?'The rendered file is no longer available. Render it again to create a new preview.':`Preview ${job!.state}${job!.error?`: ${job!.error}`:''}.`}</strong>
-              <button onClick={()=>void start()}><EditorIcon name="refresh" size={16}/>Render again</button>
+              <strong role="alert">{missing?(!job?'The saved preview job is no longer in your history. Render again to create a new preview.':'The rendered file is no longer available. Render it again to create a new preview.'):`Preview ${job!.state}${job!.error?`: ${job!.error}`:''}.`}</strong>
+              <button onClick={()=>void start(true)}><EditorIcon name="refresh" size={16}/>Render again</button>
             </>:<>
               <EditorIcon name="eye" size={28}/>
+              <button onClick={()=>void start(true)}>Render again</button>
               <strong>{stale?'Preview is out of date':'No preview rendered yet'}</strong>
             </>}
           </div>}
@@ -126,10 +147,10 @@ export function RenderedPreview({recipe,options,presetId,jobs,artifacts,allowed,
               <button disabled={!ready||native.revealFile?.state!=='available'} title={native.revealFile?.reason} onClick={()=>void fileAction('reveal',output!.id)}><EditorIcon name="folder" size={16}/>Show in folder</button>
               <button disabled={!ready} onClick={()=>void fileAction('path',output!.id)}><EditorIcon name={copied==='path'?'check':'link'} size={16}/>{copied==='path'?'Path copied':'Copy file path'}</button>
             </>:<>
-              {ready?<a className="rp-download primary-link" href={contentUrl(output!.id)} download={output!.name}><EditorIcon name="download" size={17}/>Download previewed file</a>:<button className="primary" disabled><EditorIcon name="download" size={17}/>Download previewed file</button>}
+              {ready?<a className="rp-download primary-link" href={downloadUrl(output!.id)} download={output!.name}><EditorIcon name="download" size={17}/>Download previewed file</a>:<button className="primary" disabled><EditorIcon name="download" size={17}/>Download previewed file</button>}
               <p className="rp-hint"><EditorIcon name="info" size={15}/>Copy to clipboard is available in the desktop app.</p>
             </>}
-            {bridge&&ready&&<a className="rp-download" href={contentUrl(output!.id)} download={output!.name}><EditorIcon name="download" size={16}/>Download</a>}
+            {bridge&&ready&&<a className="rp-download" href={downloadUrl(output!.id)} download={output!.name}><EditorIcon name="download" size={16}/>Download</a>}
             {ready&&<button className="rp-replay" onClick={()=>{if(video.current)video.current.currentTime=0;void play();}}><EditorIcon name="rotate-left" size={16}/>Play from start</button>}
           </div>
           {copied&&<p role="status" className="rp-feedback"><EditorIcon name="saved" size={15} tone="ok"/>{copied==='file'?'File copied. Paste it into any app.':'File path copied.'}</p>}

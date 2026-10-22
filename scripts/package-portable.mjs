@@ -10,7 +10,7 @@ const results = [];
 for (const folder of outputs) {
   const output = path.resolve(folder), parent = path.dirname(output);
   const archive = path.join(parent, 'Media-Workbench-v' + pkg.version + '-windows-x64-portable.zip');
-  const releaseRoot = path.resolve('release');
+  const releaseRoot = path.resolve(process.env.MW_PACKAGE_OUTPUT||'release');
   if (parent !== releaseRoot || path.dirname(archive) !== releaseRoot || path.basename(archive) !== 'Media-Workbench-v' + pkg.version + '-windows-x64-portable.zip') throw Error('Unsafe portable archive output path');
   await rm(archive, { force: true });
   await createPortableZip(output, archive);
