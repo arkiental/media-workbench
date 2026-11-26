@@ -10,7 +10,7 @@ const tools=await discoverTools(),fixture=path.join(output,'first-source.mp4'),s
 await runProcess(tools.ffmpeg,['-y','-v','error','-f','lavfi','-i','testsrc2=size=320x180:rate=10:duration=2','-c:v','libx264',fixture]);await copyFile(fixture,second);
 const token=randomUUID(),app=await createServer({dataDir:path.join(output,'service'),ownerToken:token,tools});await app.listen({host:'127.0.0.1',port:0});const address=app.server.address();assert(address&&typeof address==='object');const origin=`http://127.0.0.1:${address.port}`;
 const browser=await chromium.launch({channel:'msedge',headless:true}),page=await browser.newPage({viewport:{width:1280,height:900}}),checks:string[]=[],errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
-const dialog=page.getByRole('dialog',{name:'Export media'}),panel=dialog.locator('.export-preset-save'),open=()=>page.locator('.editor-review-export').click();
+const dialog=page.getByRole('dialog',{name:'Export media'}),panel=dialog.locator('.export-preset-save'),open=()=>page.getByRole('button',{name:'Export…',exact:true}).click();
 const list=async()=>await(await page.request.get(origin+'/api/v1/presets')).json();let posts=0;page.on('request',r=>{if(r.method()==='POST'&&r.url().endsWith('/presets/import'))posts++;});
 const importFile=async(file:string)=>{await page.locator('.app-header').getByRole('button',{name:'Import',exact:true}).click();await page.getByLabel('Local media').setInputFiles(file);await page.getByRole('region',{name:'File imports'}).getByText('1 of 1 ready',{exact:true}).waitFor();await page.getByRole('region',{name:'File imports'}).getByRole('button',{name:'Dismiss'}).click();};
 try{

@@ -36,8 +36,8 @@ export function useBulkDelete({items,scope,kind,remove,refresh,setNotice,beforeO
       <label><input type="checkbox" aria-label="Select all visible" ref={node=>{if(node)node.indeterminate=selected.length>0&&!all;}} checked={all} disabled={!eligible.length||busy} onChange={()=>all?clear():setSelection({scope,ids:new Set(eligible.map(item=>item.id))})}/>Select all visible</label>
       <span aria-live="polite">{selected.length} selected</span>
       {selected.length>0&&<button className="quiet" disabled={busy} onClick={clear}>Clear selection</button>}
-      <button className="danger-quiet" disabled={!selected.length||busy} onClick={()=>open(selected)}>Delete selected</button>
-      <small>{kind==='items'?'Active tasks and pinned files are protected.':kind==='files'?'Pinned files are excluded.':'Finished jobs only. Media files are kept.'}</small>
+      {selected.length>0&&<><button className="danger-quiet" disabled={busy} onClick={()=>open(selected)}>Delete selected</button>
+      <small>{kind==='items'?'Active tasks and pinned files are protected.':kind==='files'?'Pinned files are excluded.':'Finished jobs only. Media files are kept.'}</small></>}
     </div>
     <dialog ref={dialog} className="library-delete-dialog bulk-delete-dialog" aria-label={title} onCancel={event=>{if(locked.current)event.preventDefault();}}>
       <h2>{title}</h2>

@@ -24,7 +24,7 @@ for(let pass=0;pass<2;pass++){
   const dialog=page.getByRole('dialog',{name:'Export media',exact:true});
   if(pass===0){
    await upload(first);await page.getByRole('button',{name:'Edit source',exact:true}).click();await page.locator('.scrubber').waitFor();
-   await page.locator('.editor-review-export').click();
+   await page.locator('.export-more').click();
    await dialog.getByLabel('Export name',{exact:true}).fill('First custom filename');
    await dialog.getByLabel('Output goal',{exact:true}).selectOption('size');await dialog.getByLabel('Maximum size (MB)',{exact:true}).fill('1');
    await dialog.getByText('Advanced encoding settings',{exact:true}).click();await dialog.getByLabel('Cutting strategy',{exact:true}).selectOption('exact');
@@ -39,11 +39,11 @@ for(let pass=0;pass<2;pass++){
    await page.getByRole('button',{name:'Project saving',exact:true}).click();assert.equal(await project.getByLabel('Project name',{exact:true}).inputValue(),'Alternate project');await project.getByRole('button',{name:'Close project saving',exact:true}).click();
    checks.push('Native saved-project search identifies the source and opens the matching named copy.');
    await upload(second);await page.getByRole('button',{name:'Library',exact:true}).click();await page.locator('.media-card').filter({has:page.getByRole('heading',{name:'Second source.mp4',exact:true})}).getByRole('button',{name:'Edit source',exact:true}).click();await page.locator('.scrubber').waitFor();
-   await page.locator('.editor-review-export').click();await dialog.getByLabel('Export name',{exact:true}).fill('Second custom filename');await dialog.getByLabel('Apply portable preset',{exact:true}).selectOption({label:'Small exact clips'});
+   await page.locator('.export-more').click();await dialog.getByLabel('Export name',{exact:true}).fill('Second custom filename');await dialog.getByLabel('Apply portable preset',{exact:true}).selectOption({label:'Small exact clips'});
    assert.equal(await dialog.getByLabel('Export name',{exact:true}).inputValue(),'Second custom filename');assert.equal(await dialog.getByLabel('Output goal',{exact:true}).inputValue(),'size');assert.equal(await dialog.getByLabel('Maximum size (MB)',{exact:true}).inputValue(),'1');
    checks.push('A named export preset is saved without a source filename and applies its size settings to another source while retaining that source filename.');
   }else{
-   await page.locator('.scrubber').waitFor();await page.locator('.editor-review-export').click();assert.equal(await dialog.getByLabel('Export name',{exact:true}).inputValue(),'Second custom filename');
+   await page.locator('.scrubber').waitFor();await page.locator('.export-more').click();assert.equal(await dialog.getByLabel('Export name',{exact:true}).inputValue(),'Second custom filename');
    await dialog.getByLabel('Apply portable preset',{exact:true}).selectOption({label:'Small exact clips'});assert.equal(await dialog.getByLabel('Export name',{exact:true}).inputValue(),'Second custom filename');
    await dialog.getByRole('button',{name:'Resolve export plan',exact:true}).click();await page.waitForFunction(()=>!(document.querySelector('[aria-label="Export using reviewed plan"]') as HTMLButtonElement)?.disabled);await dialog.getByRole('button',{name:'Export using reviewed plan',exact:true}).click();await dialog.getByRole('status').filter({hasText:/^Export ready$/}).waitFor({timeout:60000});
    const jobs=await page.evaluate(async()=>await(await fetch('/api/v1/jobs')).json());assert.equal(jobs.length,1);assert.equal(jobs[0].state,'completed');assert.equal(jobs[0].request.options.cut,'exact');assert.equal(jobs[0].request.options.maxBytes,1000000);

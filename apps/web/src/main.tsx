@@ -30,10 +30,14 @@ import './audio.css';
 import './overlay.css';
 import './link-import.css';
 import './mobile-editor.css';
+import './streamline.css';
+import { QuickImport, linkFrom } from './QuickImport';
 
 type Task = (work: () => Promise<unknown>) => Promise<void>;
 class MediaRefreshError extends Error {}
 const primaryTabs = ['Library', 'Editor'] as const;
+// Visitors through a password-protected Cloudflare tunnel sign in with the tunnel password, not a pairing token.
+const passwordLogin = /\.trycloudflare\.com$/i.test(location.hostname);
 const tabIcons: Record<string, string> = { Library: 'library', Editor: 'editor' };
 
 function App() {
@@ -55,6 +59,10 @@ function App() {
   const [project, setProject] = useState<Project>();
   const [theme, setTheme] = useState(() => readPreference('mw:theme') || 'dark');
   const [settingsTab, setSettingsTab] = useState('General');
+  const [quickUrl, setQuickUrl] = useState('');
+  const [pendingEdit, setPendingEdit] = useState<string>();
+  const [quickFocus, setQuickFocus] = useState(0);
+  const [advancedUrl, setAdvancedUrl] = useState('');
   const [libraryFilters, setLibraryFilters] = useState({ status: 'all', query: '', kind: 'all', sort: 'newest' });
 
   useEffect(() => { document.documentElement.dataset.theme = theme; writePreference('mw:theme', theme); }, [theme]);
@@ -167,15 +175,44 @@ function App() {
     setProject(undefined); setSourceId(id); navigate('Editor', { sourceId: id, project: undefined });
     writePreference('mw:last:' + caps!.user.id, JSON.stringify({ sourceId: id }));
   };
+  // "Download & edit": open the editor as soon as the tracked download has registered its source.
+  const editRef = React.useRef(edit); editRef.current = edit;
+  const tabRef = React.useRef(tab); tabRef.current = tab;
+  const pendingRef = React.useRef(pendingEdit); pendingRef.current = pendingEdit;
+  useEffect(() => {
+    if (!pendingEdit) return;
+    const job = jobs.find(item => item.id === pendingEdit);
+    if (job?.state !== 'completed' || !job.sourceId || !sources.some(source => source.id === job.sourceId)) return;
+    setPendingEdit(undefined); setQuickUrl('');
+    if (tabRef.current === 'Library') editRef.current(job.sourceId);
+    else setNotice(`${sources.find(source => source.id === job.sourceId)?.name || 'Your download'} is ready to edit in the Library.`);
+  }, [jobs, sources, pendingEdit]);
+  // Pasting a link anywhere on the Library (outside a text field) starts the quick download flow.
+  useEffect(() => {
+    const paste = (event: ClipboardEvent) => {
+      if (tabRef.current !== 'Library' || pendingRef.current) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('input,textarea,select,[contenteditable="true"]') || document.querySelector('dialog[open]')) return;
+      const link = linkFrom(event.clipboardData?.getData('text') || '');
+      if (!link) return;
+      event.preventDefault(); setQuickUrl(link); setQuickFocus(value => value + 1); window.scrollTo(0, 0);
+    };
+    window.addEventListener('paste', paste);
+    return () => window.removeEventListener('paste', paste);
+  }, []);
 
   if (!caps) return <main className="login">
     <div className="login-heading"><strong>Media Workbench</strong><span>Local workspace</span></div>
-    <h1>{authNeeded ? 'Connect to your workspace' : 'Opening your workspace'}</h1>
+    <h1>{authNeeded ? (passwordLogin ? 'Enter the password' : 'Connect to your workspace') : 'Opening your workspace'}</h1>
 
     {error && <p role="alert" className="error">{error}</p>}
-    {authNeeded ? <form onSubmit={event => { event.preventDefault(); void run(async () => { await api.session(token); setToken(''); await connect(); }); }}>
-      <Field label="Access token"><input type="password" autoComplete="off" value={token} onChange={event => setToken(event.target.value)} required /></Field>
-      <button className="primary" disabled={busy || !token}>Connect</button>
+    {authNeeded ? <form onSubmit={event => { event.preventDefault(); void run(async () => {
+      try { await api.session(token); }
+      catch (cause) { if (passwordLogin && cause instanceof ApiError && cause.status === 401) throw new Error('Wrong password. Try again.'); if (passwordLogin && cause instanceof ApiError && cause.status === 429) throw new Error('Too many attempts. Wait a minute, then try again.'); throw cause; }
+      setToken(''); await connect();
+    }); }}>
+      <Field label={passwordLogin ? 'Password' : 'Access token'}><input type="password" autoComplete={passwordLogin ? 'current-password' : 'off'} autoFocus value={token} onChange={event => setToken(event.target.value)} required /></Field>
+      <button className="primary" disabled={busy || !token}>{passwordLogin ? 'Unlock' : 'Connect'}</button>
       {busy && <p role="status">Connecting…</p>}
     </form> : <p role="status">Connecting…</p>}
   </main>;
@@ -198,7 +235,7 @@ function App() {
       <div className="brand"><span className="brand-glyph" aria-hidden="true"><EditorIcon name="video" size={16}/></span><strong>Media Workbench</strong></div>
       <nav className="desktop-navigation" aria-label="Main">{navigation()}</nav>
       <div className="shell-actions"><div id="editor-header-actions" />
-        <button className="primary import-trigger" aria-current={tab === 'Input' ? 'page' : undefined} onClick={() => navigate('Input')}><EditorIcon name="upload" size={17}/>Import</button>
+        <button className="import-trigger" aria-current={tab === 'Input' ? 'page' : undefined} onClick={() => { setAdvancedUrl(''); navigate('Input'); }}><EditorIcon name="upload" size={17}/>Import</button>
         <button className="settings-button" aria-label="Settings" title="Settings" aria-current={tab === 'Settings' ? 'page' : undefined} onClick={() => navigate('Settings')}><EditorIcon name="settings" size={18}/><span>Settings</span></button>
       </div>
     </header>
@@ -207,8 +244,9 @@ function App() {
       {refreshError&&<div role="alert" className="error"><EditorIcon name="alert" size={18}/><span>{refreshError} Media may be out of date. Retrying automatically.</span><button aria-label="Retry media connection" disabled={busy} onClick={()=>void run(refresh)}>Retry now</button></div>}
       {error && <div role="alert" className="error"><EditorIcon name="alert" size={18}/><span>{error}</span><button aria-label="Dismiss error" onClick={() => setError('')}>Dismiss</button></div>}
       {notice && <p role="status" className={informationalNotice?'notice notice-info':'notice'}><EditorIcon name={informationalNotice?'info':'saved'} size={18} tone={informationalNotice?'info':'ok'}/><span>{notice}</span>{editing&&<button aria-label="Dismiss notification" onClick={()=>setNotice('')}>Dismiss</button>}</p>}
-      {tab === 'Input' && <Input importing={imports.active} importFiles={files => void imports.start(files, caps.user.policy.maxInputBytes).then(complete => { if (complete) setTab(current => current === 'Input' ? 'Library' : current); })} caps={caps} run={run} refresh={refresh} done={()=>navigate('Library')} setNotice={setNotice} />}
-      {tab === 'Library' && <><div className="page-heading"><div><h1>Library</h1><p>Your videos and their progress, together.</p></div><button onClick={() => void run(refresh)} disabled={busy}><EditorIcon name="refresh" size={16}/>Refresh</button></div>
+      {tab === 'Input' && <Input key={advancedUrl} initialUrl={advancedUrl} importing={imports.active} importFiles={files => void imports.start(files, caps.user.policy.maxInputBytes).then(complete => { if (complete) setTab(current => current === 'Input' ? 'Library' : current); })} caps={caps} run={run} refresh={refresh} done={()=>navigate('Library')} setNotice={setNotice} />}
+      {tab === 'Library' && <><div className="page-heading library-heading"><h1>Library</h1><button className="quiet" onClick={() => void run(refresh)} disabled={busy}><EditorIcon name="refresh" size={16}/>Refresh</button></div>
+        <QuickImport caps={caps} url={quickUrl} setUrl={setQuickUrl} jobs={jobs} run={run} refresh={refresh} setNotice={setNotice} importing={imports.active} importFiles={files => importDropped.current(files)} openAdvanced={url => { setAdvancedUrl(url); navigate('Input'); }} pendingEdit={pendingEdit} setPendingEdit={setPendingEdit} focusSignal={quickFocus}/>
         <Library previewPositions={previewPositions.current} position={libraryPosition} filters={libraryFilters} setFilters={setLibraryFilters} canProcess={caps.user.policy.process} jobs={jobs} onImport={()=>navigate('Input')} sources={sources} artifacts={artifacts} run={run} refresh={refresh} edit={edit} setNotice={setNotice} /><details className="library-projects"><summary>Saved projects</summary><SavedProjects mediaLoaded={mediaLoaded} sources={sources} artifacts={artifacts} ownerId={caps.user.id} onProject={openProject} /></details></>}
       {tab === 'Editor' && (editing ? <Editor jobs={jobs} key={sourceId + '-' + (project?.id || '')} source={selected} artifact={selectedArtifact} sources={sources} artifacts={artifacts} caps={caps} project={project} run={run} refresh={refresh} setNotice={setNotice} />
         : <section className="empty-state editor-empty"><span className="empty-glyph" aria-hidden="true"><EditorIcon name="editor" size={28}/></span><span className="empty-label">Editor</span><h1>Choose a video to edit</h1><p>Import a file or pick something from your library to start cutting, captioning and exporting.</p><div className="actions"><button className="primary" onClick={() => navigate('Input')}><EditorIcon name="plus" size={17}/>Import</button><button onClick={() => navigate('Library')}><EditorIcon name="library" size={17}/>Open library</button></div></section>)}

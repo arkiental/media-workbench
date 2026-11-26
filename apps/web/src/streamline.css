@@ -1,0 +1,113 @@
+/* Streamlined flow: Library quick import, one-click export and export status card. */
+
+.library-heading { display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; }
+.library-heading h1 { margin:0; }
+.library-heading > button.quiet { background:transparent; border-color:transparent; color:var(--muted); }
+.library-heading > button.quiet:hover:not(:disabled) { color:var(--text); border-color:var(--line); }
+
+.quick-import { margin:0 0 28px; padding:20px; border:1px solid var(--line); background:var(--surface); border-radius:var(--radius, 0); }
+.quick-import-bar { display:flex; align-items:center; gap:12px; }
+.quick-url { flex:1; min-width:0; display:flex; align-items:center; gap:10px; padding:0 12px; min-height:52px; border:1px solid var(--control-line, var(--line)); background:var(--bg); }
+.quick-url:focus-within { outline:2px solid var(--focus, var(--accent)); outline-offset:1px; }
+.quick-url > svg { flex-shrink:0; color:var(--muted); }
+.quick-url input { flex:1; min-width:0; border:0; outline:0; background:transparent; color:var(--text); font-size:16px; padding:12px 0; box-shadow:none; }
+.quick-url input:focus { outline:0; box-shadow:none; }
+.quick-clear { border:0; background:transparent; padding:6px; min-height:0; color:var(--muted); }
+.quick-or { color:var(--muted); font-size:13px; }
+.quick-import-bar > button { min-height:52px; white-space:nowrap; }
+.quick-hint, .quick-status { margin:10px 0 0; color:var(--muted); font-size:13px; }
+.quick-status { display:flex; align-items:center; gap:10px; color:var(--text); }
+.quick-spinner { width:14px; height:14px; border:2px solid var(--line); border-top-color:var(--text); border-radius:50%; animation:quick-spin .8s linear infinite; }
+@keyframes quick-spin { to { transform:rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .quick-spinner { animation:none; } }
+.quick-error { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-top:12px; padding:10px 12px; border:1px solid var(--danger); background:var(--danger-bg, transparent); font-size:14px; }
+.quick-error > span { flex:1; min-width:200px; }
+
+.quick-found { display:grid; grid-template-columns:160px minmax(0,1fr) auto; gap:20px; align-items:center; margin-top:16px; padding-top:16px; border-top:1px solid var(--line); }
+.quick-thumb { position:relative; width:160px; aspect-ratio:16/9; display:grid; place-items:center; background:var(--surface-alt, var(--bg)); overflow:hidden; }
+.quick-thumb img { width:100%; height:100%; object-fit:cover; }
+.quick-thumb .quick-spinner { width:22px; height:22px; }
+.quick-info .quick-status { margin-top:4px; color:var(--muted); }
+.quick-thumb span { position:absolute; right:6px; bottom:6px; padding:2px 6px; background:rgba(0,0,0,.75); color:#fff; font-size:12px; font-variant-numeric:tabular-nums; }
+.quick-info { min-width:0; }
+.quick-info h2 { margin:0 0 6px; font-size:17px; line-height:1.3; overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+.quick-info p { margin:0; color:var(--muted); font-size:13px; }
+.quick-info .quick-field { margin-top:10px; }
+.quick-actions { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:10px; }
+.quick-field { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--muted); }
+.quick-field select { min-height:40px; padding:6px 8px; color:var(--text); }
+.quick-actions > button { min-height:40px; white-space:nowrap; }
+.quick-actions > .quick-more { background:transparent; border-color:transparent; color:var(--muted); text-decoration:underline; text-underline-offset:3px; padding-inline:6px; }
+.quick-actions > .quick-more:hover { color:var(--text); }
+
+.quick-pending { display:grid; gap:10px; margin-top:16px; padding-top:16px; border-top:1px solid var(--line); }
+.quick-pending > div:first-child { display:flex; flex-wrap:wrap; gap:6px 16px; align-items:baseline; justify-content:space-between; }
+.quick-pending strong { font-size:16px; }
+.quick-pending span[role=status] { color:var(--muted); font-size:14px; font-variant-numeric:tabular-nums; }
+.quick-pending progress { width:100%; height:8px; }
+.quick-pending p { margin:0; color:var(--muted); font-size:13px; }
+.quick-pending .actions { display:flex; gap:10px; flex-wrap:wrap; }
+.quick-pending button.quiet { background:transparent; border-color:transparent; color:var(--muted); }
+
+@media (max-width: 760px) {
+  .quick-import { padding:14px; margin-bottom:20px; }
+  .quick-import-bar { flex-wrap:wrap; }
+  .quick-url { flex-basis:100%; }
+  .quick-or { display:none; }
+  .quick-import-bar > button { flex:1; min-height:44px; }
+  .quick-found { grid-template-columns:96px minmax(0,1fr); gap:12px; }
+  .quick-thumb { width:96px; }
+  .quick-actions { grid-column:1 / -1; justify-content:stretch; }
+  .quick-actions > .quick-field { flex-basis:100%; }
+  .quick-actions > .quick-field select { flex:1; }
+  .quick-actions > button { flex:1; }
+}
+
+/* Editor: Export is one click; the chevron opens the full options dialog. */
+.export-split { display:inline-flex; align-items:stretch; order:2; }
+.export-split > .editor-review-export { order:0; }
+.export-split > .export-more { padding-inline:10px; border-left:1px solid color-mix(in srgb, var(--on-accent) 25%, transparent); }
+.editor-export-summary > .export-summary-now { margin-bottom:10px; }
+.editor-export-summary > .export-summary-review { background:transparent; }
+
+.export-toast { position:fixed; right:20px; bottom:44px; z-index:40; width:min(380px, calc(100vw - 32px)); max-height:min(70vh, 560px); overflow:auto; padding:16px 18px; background:var(--raised, var(--surface)); color:var(--text); border:1px solid var(--line); box-shadow:0 12px 40px rgba(0,0,0,.45); }
+.export-toast h3 { margin:0 32px 8px 0; font-size:15px; }
+.export-toast p { margin:6px 0; font-size:13px; color:var(--muted); overflow-wrap:anywhere; }
+.export-toast progress { width:100%; height:8px; margin:6px 0 2px; }
+.export-toast .export-warnings { margin:8px 0; padding-left:18px; font-size:12px; color:var(--muted); }
+.export-toast .actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+.export-toast .actions > * { font-size:12px; }
+.export-toast-close { position:absolute; top:10px; right:10px; padding:6px; min-height:0; background:transparent; border-color:transparent; }
+@media (max-width: 760px) { .export-toast { right:16px; left:16px; width:auto; bottom:88px; } }
+
+.app-shell .app-header .shell-actions .export-split > button.export-more { min-width:0; width:44px; padding:0; justify-content:center; }
+.app-shell .app-header .shell-actions .export-split > button.editor-review-export { padding-inline:16px; }
+.editor-export-summary .export-summary-details { margin-top:20px; padding-top:16px; }
+@media (max-width: 760px) {
+  .quick-actions > .quick-field { order:0; }
+  .quick-actions > button.primary { order:1; flex-basis:100%; }
+  .quick-actions > button:not(.primary):not(.quick-more) { order:2; }
+  .quick-actions > .quick-more { order:3; flex:0 0 auto; }
+}
+
+/* The editor has its own Library tab; the header Import button only adds width there. */
+@media (max-width: 1100px) { .app-shell.editing-shell .app-header .shell-actions > .import-trigger { display:none; } }
+
+/* Phones: keep Project a full touch target; on the narrowest screens Export becomes icon-only. */
+@media (max-width: 850px) {
+  .app-shell.editing-shell .app-header .shell-actions button.project-save-trigger,
+  .app-shell.editing-shell .app-header .shell-actions .export-split > button { flex-shrink:0; min-width:44px !important; }
+  .app-shell.editing-shell .app-header .shell-actions button.project-save-trigger { min-width:44px !important; }
+}
+@media (max-width: 380px) {
+  .app-shell.editing-shell .mobile-editor-back > span { display:none; }
+  .app-shell .app-header .shell-actions .export-split > button.editor-review-export { padding-inline:12px; }
+  .app-shell .app-header .shell-actions .export-split > button.editor-review-export > span { display:none; }
+}
+
+/* 851–1100px: the export panel (with "More options") is visible, so the header keeps only the one-click Export. */
+@media (min-width: 851px) and (max-width: 1100px) {
+  .app-shell .app-header .shell-actions .export-split > button.export-more { display:none; }
+  .app-shell .app-header .shell-actions .export-split > button.editor-review-export { padding-inline:12px; }
+  .editing-shell .editor-save-state { max-width:22px; overflow:hidden; }
+}

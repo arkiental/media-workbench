@@ -1,5 +1,13 @@
-type Format = {id:string;width?:number;height?:number;vcodec?:string;acodec?:string;ext?:string;tbr?:number;fps?:number;bytes?:number|null};
-export function downloadQualities(formats:Format[],compatible:boolean) {
+type Format = {id:string;width?:number;height?:number;vcodec?:string;acodec?:string;ext?:string;tbr?:number;fps?:number;bytes?:number|null;language?:string;audioTrack?:'original'|'dubbed'};
+const hasAudio=(f:Format)=>!!f.acodec&&f.acodec!=='none',audioOnlyFormat=(f:Format)=>hasAudio(f)&&(!f.vcodec||f.vcodec==='none');
+/** Keep the original voice: drop dubbed/translated audio tracks whenever the original (or any undubbed) audio exists. */
+export function originalAudio(formats:Format[]):Format[] {
+  if(formats.some(f=>hasAudio(f)&&f.audioTrack==='original'))return formats.filter(f=>!hasAudio(f)||f.audioTrack==='original'||(!audioOnlyFormat(f)&&f.audioTrack!=='dubbed'));
+  const kept=formats.filter(f=>!(hasAudio(f)&&f.audioTrack==='dubbed'));
+  return kept.some(hasAudio)?kept:formats;
+}
+export function downloadQualities(all:Format[],compatible:boolean) {
+  const formats=originalAudio(all);
   const groups=new Map<number,Format[]>();
   for(const format of formats) {
     if(!format.width||!format.height||!format.vcodec||format.vcodec==='none')continue;
@@ -19,7 +27,8 @@ export type FormatRow = {key:string;format:string;kind:'video'|'audio';ext:strin
 const tiers=['Best quality','High quality','Standard','Low'];
 const codecName=(codec?:string)=>!codec||codec==='none'?'':codec.startsWith('avc1')?'H.264':codec.startsWith('mp4a')?'AAC':codec.startsWith('vp09')||codec.startsWith('vp9')?'VP9':codec.startsWith('av01')?'AV1':codec.startsWith('hev')||codec.startsWith('hvc')?'H.265':codec==='opus'?'Opus':codec.split('.')[0].toUpperCase();
 /** One selectable row per resolution (best encode first), followed by the best audio-only streams. */
-export function formatRows(formats:Format[]):FormatRow[] {
+export function formatRows(all:Format[]):FormatRow[] {
+  const formats=originalAudio(all);
   const audioOnly=formats.filter(f=>f.acodec&&f.acodec!=='none'&&(!f.vcodec||f.vcodec==='none')).sort((a,b)=>(b.tbr||0)-(a.tbr||0));
   const groups=new Map<number,Format[]>();
   for(const f of formats) {

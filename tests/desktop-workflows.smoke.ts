@@ -101,7 +101,7 @@ if (packaged || process.env.MW_TEST_DESKTOP_PERSISTENCE) {
     await page.waitForFunction(() => Object.keys(localStorage).some(key => key.startsWith('mw:draft:')));
     const restoredSegments = await page.evaluate(() => { const key = Object.keys(localStorage).find(key => key.startsWith('mw:draft:'))!; const draft = JSON.parse(localStorage[key]); return draft.history[draft.cursor].segments; });
     assert.equal(restoredSegments.length, 2, 'Full packaged restart must retain the two edited sections');
-    await page.locator('.editor-review-export').click();
+    await page.locator('.export-more').click();
     await page.getByRole('dialog', { name: 'Export media' }).getByRole('status').filter({ hasText: /^Export ready$/ }).waitFor();
     assert.equal(await page.evaluate(async () => (await (await fetch('/api/v1/jobs')).json()).filter((j: any) => j.request.type === 'export').length), 1);
     checks.push('Closing and relaunching the packaged executable restores the edited source and completed export without resubmission, with only Windows system tools on PATH.');

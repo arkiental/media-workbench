@@ -28,7 +28,7 @@ import { BandwidthLimiter } from './bandwidth.ts';
 import { captionLayout } from '../../../packages/contracts/src/caption.ts';
 import { PairingLimiter } from './pairing-rate.ts';
 
-export type ServerOptions={dataDir:string;ownerToken?:string;tools?:ToolPaths;encoders?:EncoderCapability[];host?:string;shared?:boolean;publicOrigin?:string;privateOrigin?:string;privateNoToken?:boolean;desktopSecret?:string;testOrigin?:string;startQueue?:boolean;workerConfig?:WorkerConfig;tunnelPrototype?:boolean};
+export type ServerOptions={dataDir:string;ownerToken?:string;tools?:ToolPaths;encoders?:EncoderCapability[];host?:string;shared?:boolean;publicOrigin?:string;privateOrigin?:string;privateNoToken?:boolean;desktopSecret?:string;testOrigin?:string;startQueue?:boolean;workerConfig?:WorkerConfig;tunnelPrototype?:boolean;tunnelPassword?:string};
 type Auth={user:User;scopes:string[];id:string};
 declare module 'fastify' { interface FastifyInstance { store:Store; queue:Queue; tools:ToolPaths; encoders:EncoderCapability[]; } }
 const OVERLAY_BYTES=20*1024*1024;
@@ -37,8 +37,16 @@ const safeEqual=(a:string,b:string)=>a.length===b.length&&timingSafeEqual(Buffer
 export async function createServer(options:ServerOptions){
  if(options.privateNoToken&&(!options.privateOrigin||options.shared||options.publicOrigin||options.tunnelPrototype||!['127.0.0.1','::1','localhost'].includes(options.host||'127.0.0.1')))throw Error('Token-free private access requires a loopback host and private origin; public/shared hosting is not permitted');
  if(options.shared&&options.tunnelPrototype)throw Error('Shared hosting cannot enable the anonymous tunnel prototype');
+ if(options.tunnelPassword!==undefined){
+  if(options.tunnelPrototype)throw Error('A password-protected tunnel replaces the anonymous tunnel prototype; enable only one');
+  if(options.shared||options.privateOrigin||options.privateNoToken||options.publicOrigin)throw Error('A password-protected tunnel cannot be combined with shared, public or private hosting');
+  if(options.tunnelPassword.length<10||options.tunnelPassword.length>512)throw Error('Tunnel password must be 10 to 512 characters');
+ }
+ // Either tunnel mode admits Cloudflare quick-tunnel hostnames and disables desktop-only native features.
+ const tunnel=!!options.tunnelPrototype||options.tunnelPassword!==undefined;
+ const tunnelHost=(hostname:string)=>tunnel&&/^[a-z0-9-]+\.trycloudflare\.com$/.test(hostname);
  if(options.privateOrigin){
-  if(options.shared||options.tunnelPrototype)throw Error('Private access cannot enable shared hosting or the anonymous tunnel prototype');
+  if(options.shared||tunnel)throw Error('Private access cannot enable shared hosting or the anonymous tunnel prototype');
   let valid=false;try{const origin=new URL(options.privateOrigin);valid=origin.protocol==='https:'&&!origin.username&&!origin.password&&origin.origin===options.privateOrigin;}catch{}
   if(!valid)throw Error('Private origin must be a bare HTTPS origin');
   if(options.privateNoToken&&!new URL(options.privateOrigin).hostname.endsWith('.ts.net'))throw Error('Token-free private access requires a Tailscale HTTPS origin');
@@ -47,7 +55,7 @@ export async function createServer(options:ServerOptions){
  if((options.shared||exposed)&&(!options.shared||!options.workerConfig||!options.ownerToken||!options.publicOrigin?.startsWith('https://')||options.testOrigin))throw Error('Shared hosting is disabled: require isolated workers, explicit owner credential and HTTPS public origin');
  if(options.shared&&(!options.workerConfig?.proxyPath||!options.workerConfig.relayPath||options.workerConfig.proxyVolume))throw Error('Shared hosting is disabled: per-operation mandatory proxy is required');
  if(options.shared){const publicUrl=new URL(options.publicOrigin!);if(publicUrl.protocol!=='https:'||publicUrl.username||publicUrl.password||publicUrl.pathname!=='/'||publicUrl.search||publicUrl.hash)throw Error('Shared public origin must be a bare HTTPS origin');}
- const desktopLocal=!!options.desktopSecret&&!options.shared&&!options.tunnelPrototype;
+ const desktopLocal=!!options.desktopSecret&&!options.shared&&!tunnel;
  const store=new Store(options.dataDir);const tools=options.tools||await discoverTools();
  const worker=options.workerConfig?new IsolatedWorker({...options.workerConfig,ownerLabel:createHash('sha256').update(store.dataDir).digest('hex').slice(0,24)}):undefined;if(worker)await worker.recover();
  const owner=store.users().find(u=>u.role==='owner')||store.createUser('Local owner','owner');
@@ -61,6 +69,15 @@ export async function createServer(options:ServerOptions){
  }
  // Prototype only: a temporary Cloudflare quick tunnel serves visitors as a limited member, never the owner.
  const tunnelGuest=options.tunnelPrototype?(store.users().find(u=>u.name==='Tunnel guest')||store.createUser('Tunnel guest','member')):undefined;
+ // Password-protected tunnel: the password is the only credential for a limited member account (never the owner).
+ // Starting with a different password revokes the previous one.
+ if(options.tunnelPassword!==undefined){
+  const visitor=store.users().find(u=>u.name==='Tunnel visitor')||store.createUser('Tunnel visitor','member');
+  const current=store.auth(options.tunnelPassword);
+  if(current&&current.user.id!==visitor.id)throw Error('The tunnel password matches another credential; choose a different password');
+  for(const token of store.tokens(visitor.id))if(token.name==='Tunnel password'&&token.id!==current?.id)store.revoke(visitor.id,token.id);
+  if(!current)store.token(visitor.id,'Tunnel password',['read','submit','manage'],options.tunnelPassword);
+ }
  if(options.ownerToken){if(!store.auth(options.ownerToken))store.token(owner.id,'Local owner',['read','submit','manage'],options.ownerToken);}
  else if(!store.tokens(owner.id).length){const token=store.token(owner.id,'Local owner');await writeFile(path.join(store.dataDir,'owner-token'),token.token,{mode:0o600});}
  const startupController=new AbortController();const startupBase:ExecutionContext={signal:startupController.signal,workDir:path.join(store.dataDir,'cache'),maxRuntimeSeconds:120,maxBytes:200000000};
@@ -84,8 +101,8 @@ export async function createServer(options:ServerOptions){
  app.addHook('onRequest',async(req,reply)=>{
   responses.set(req,reply);
   const host=req.headers.host||'';let hostname='';try{hostname=new URL('http://'+host).hostname;}catch{}
-  if(!['127.0.0.1','localhost','[::1]',...(options.shared?[new URL(options.publicOrigin!).hostname]:[]),...(options.privateOrigin?[new URL(options.privateOrigin).hostname]:[])].includes(hostname)&&!(options.tunnelPrototype&&/^[a-z0-9-]+\.trycloudflare\.com$/.test(hostname)))throw bad('Host is not permitted',403);
-  const origin=req.headers.origin;const loopback=['127.0.0.1','localhost','[::1]'].includes(hostname);if(origin&&(options.shared?origin!==options.publicOrigin:options.privateOrigin?origin!==options.privateOrigin&&!(loopback&&origin===`http://${host}`):origin!==`http://${host}`&&origin!==options.publicOrigin&&!(options.tunnelPrototype&&origin===`https://${host}`)))throw bad('Origin is not permitted',403);
+  if(!['127.0.0.1','localhost','[::1]',...(options.shared?[new URL(options.publicOrigin!).hostname]:[]),...(options.privateOrigin?[new URL(options.privateOrigin).hostname]:[])].includes(hostname)&&!tunnelHost(hostname))throw bad('Host is not permitted',403);
+  const origin=req.headers.origin;const loopback=['127.0.0.1','localhost','[::1]'].includes(hostname);if(origin&&(options.shared?origin!==options.publicOrigin:options.privateOrigin?origin!==options.privateOrigin&&!(loopback&&origin===`http://${host}`):origin!==`http://${host}`&&origin!==options.publicOrigin&&!(tunnelHost(hostname)&&origin===`https://${host}`)))throw bad('Origin is not permitted',403);
   reply.header('X-Content-Type-Options','nosniff').header('Referrer-Policy','no-referrer').header('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
   if(!req.url.startsWith('/api/v1/')||req.url==='/api/v1/session')return;
   const privateServe=options.privateNoToken&&host.toLowerCase()===new URL(options.privateOrigin!).host&&['127.0.0.1','::1','::ffff:127.0.0.1'].includes(req.raw.socket.remoteAddress||'')&&typeof req.headers['tailscale-user-login']==='string'&&req.headers['tailscale-user-login'].trim();
@@ -97,13 +114,13 @@ export async function createServer(options:ServerOptions){
  });
  const auth=(r:FastifyRequest)=>(r as any).auth as Auth;
  const ownerOnly=(r:FastifyRequest)=>{if(auth(r).user.role!=='owner')throw bad('Local owner permission required',403);};
- const localOwner=(r:FastifyRequest)=>{ownerOnly(r);if(options.shared||options.tunnelPrototype)throw bad('Local credential and native actions are unavailable in shared hosting',403);};
+ const localOwner=(r:FastifyRequest)=>{ownerOnly(r);if(options.shared||tunnel)throw bad('Local credential and native actions are unavailable in shared hosting',403);};
  const owned=<T>(kind:string,id:string,req:FastifyRequest):T=>{Id.parse(id);if(kind==='artifact'&&store.deletingArtifact(id))throw bad('Artifact deletion is in progress',409);const item=store.get<T>(kind,id,auth(req).user.id);if(!item)throw bad('Not found',404);return item;};
  const sourcePath=async(id:string,req:FastifyRequest)=>{const source=owned<Source>('source',id,req);owned<Artifact>('artifact',source.artifactId,req);return managedPath(store,source.artifactId);};
  const assertSource=(id:string,user:User)=>{const s=store.get<Source>('source',id,user.id);if(!s)throw bad('Source not found',404);const a=store.get<Artifact>('artifact',s.artifactId,user.id);if(!a)throw bad('Original media no longer available',404);if(store.deletingArtifact(a.id))throw bad('Artifact deletion is in progress',409);enforceMedia(a.media,user.policy);return a;};
  const assertOverlays=(recipe:Recipe,user:User)=>{for(const o of recipe.overlays)if(!store.get<OverlayImage>('overlay',o.imageId,user.id))throw bad('Overlay image not found; add the image again',404);};
  function validateRequest(input:unknown,user:User):JobRequest {const request=JobRequestSchema.parse(input);enforceJob(request,user.policy);
-  if(request.type==='download'&&request.download.destinationId&&(options.shared||options.tunnelPrototype||user.role!=='owner'||!store.get('download-destination',request.download.destinationId,user.id)))throw bad('Download folder is not authorized; choose it in the desktop app',403);
+  if(request.type==='download'&&request.download.destinationId&&(options.shared||tunnel||user.role!=='owner'||!store.get('download-destination',request.download.destinationId,user.id)))throw bad('Download folder is not authorized; choose it in the desktop app',403);
   if(request.type==='download'&&request.download.cookieId&&(options.shared||user.role!=='owner'))throw bad('Credentials are local-owner only',403);
   if(request.type==='proxy')assertSource(request.sourceId,user);
   if(request.type==='export'){
@@ -136,7 +153,7 @@ export async function createServer(options:ServerOptions){
  }
  const previewPermission=(req:FastifyRequest)=>{const p=auth(req).user.policy;if(!p.process||!p.expensiveFilters)throw bad('Preview processing permission required',403);};
  app.post('/api/v1/session',async(req,reply)=>{sessions.check(req.ip);
-  const {token}=z.object({token:z.string().max(512)}).strict().parse(req.body);const a=store.auth(token);if(!a)throw bad('Invalid or revoked pairing credential',401);if(options.privateOrigin&&a.user.role!=='owner')throw bad('Owner credential required for private access',403);const privateRequest=!!options.privateOrigin&&(req.headers.origin===options.privateOrigin||new URL('http://'+req.headers.host).hostname===new URL(options.privateOrigin).hostname);reply.setCookie('mw_session',token,{httpOnly:true,sameSite:'strict',path:'/',secure:!!options.shared||privateRequest});return {user:a.user};});
+  const {token}=z.object({token:z.string().max(512)}).strict().parse(req.body);const a=store.auth(token);if(!a)throw bad('Invalid or revoked pairing credential',401);if(options.privateOrigin&&a.user.role!=='owner')throw bad('Owner credential required for private access',403);const privateRequest=!!options.privateOrigin&&(req.headers.origin===options.privateOrigin||new URL('http://'+req.headers.host).hostname===new URL(options.privateOrigin).hostname);reply.setCookie('mw_session',token,{httpOnly:true,sameSite:'strict',path:'/',secure:!!options.shared||privateRequest||tunnelHost(new URL('http://'+(req.headers.host||'localhost')).hostname)});return {user:a.user};});
  app.delete('/api/v1/session',async(req,reply)=>{reply.clearCookie('mw_session',{path:'/'});return {ok:true};});
  app.get('/api/v1/capabilities',async(req):Promise<Capabilities>=>({mode:options.shared?'shared':'local',user:auth(req).user,features:['overlays-v1','upload-v1','download-v1','exact-cut-v1','copy-cut-v1','target-size-v1','crop-v1','captions-v1','audio-v1','projects-v1','pairing-v1'],tools:versions,encoders,native:Object.fromEntries(['fileClipboard','nativeDragOut','revealFile','externalActions'].map(k=>[k,{state:'unavailable',reason:options.shared?'Native operations are unavailable on remote visitors':'Use the paired desktop application for native actions'}])),sharedHosting:{enabled:!!options.shared,reason:options.shared?'Every native media operation runs in an isolated networkless Linux worker; downloader egress uses a dedicated filtered socket proxy':'Shared hosting requires explicit Docker worker configuration and HTTPS'}}));
  app.get('/api/v1/sources',async(req)=>store.all<Source>('source',auth(req).user.id));

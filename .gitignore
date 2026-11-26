@@ -19,3 +19,4 @@ START-HERE.txt
 Start Public Tunnel.cmd
 Launch Media Workbench.cmd
 scripts/tunnel-prototype.mjs
+.data-tunnel/

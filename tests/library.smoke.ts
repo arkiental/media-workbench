@@ -73,7 +73,7 @@ try{
   app.store.updateJob(failure.id,{state:'failed',error:'This video is unavailable. Check the link and retry.'});
   await page.getByRole('button',{name:/^All /}).click();
   await page.getByRole('checkbox',{name:'Select download video.mkv',exact:true}).check();
-  await page.getByLabel('Search media',{exact:true}).fill('proxy');assert(await page.getByRole('button',{name:'Delete selected',exact:true}).isDisabled());
+  await page.getByLabel('Search media',{exact:true}).fill('proxy');assert.equal(await page.getByRole('button',{name:'Delete selected',exact:true}).count(),0);
   assert.equal(await page.locator('.media-card').count(),1);
   await page.getByLabel('Search media',{exact:true}).fill('');
   await page.getByRole('checkbox',{name:'Select download video.mkv',exact:true}).check();

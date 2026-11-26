@@ -1,6 +1,6 @@
 {
   "name": "media-workbench",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "private": true,
   "type": "module",
   "engines": {
@@ -23,7 +23,8 @@
     "package:desktop": "npm run build && node scripts/package-desktop.mjs",
     "package:installer": "npm run package:desktop && node scripts/make-installer.mjs",
     "package:portable": "npm run build && node scripts/package-portable.mjs",
-    "test:mobile": "tsx tests/mobile-editor.smoke.ts"
+    "test:mobile": "tsx tests/mobile-editor.smoke.ts",
+    "tunnel": "npm run build && node scripts/tunnel.mjs"
   },
   "dependencies": {
     "@fastify/cookie": "11.1.2",

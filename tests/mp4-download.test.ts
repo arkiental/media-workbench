@@ -51,6 +51,17 @@ test('format rows promise the final MP4 container while audio-only choices keep 
  assert.equal(rows[0].ext,'MP4');assert.equal(rows[0].format,'v+a/v');assert.equal(rows[0].codec,'VP9 / AAC');assert.equal(rows[1].ext,'M4A');
 });
 
+test('downloads keep the original voice instead of a higher-bitrate dubbed audio track',()=>{
+ const video={id:'v',ext:'mp4',width:1920,height:1080,vcodec:'avc1',acodec:'none'};
+ const dub=(id:string,tbr:number)=>({id,ext:'webm',vcodec:'none',acodec:'opus',tbr,language:'id',audioTrack:'dubbed' as const});
+ const rows=formatRows([video,dub('251-0',134),{id:'251-1',ext:'webm',vcodec:'none',acodec:'opus',tbr:125,language:'en-US',audioTrack:'original'},dub('140-0',129),{id:'140-1',ext:'m4a',vcodec:'none',acodec:'mp4a.40.2',tbr:129,language:'en-US',audioTrack:'original'}]);
+ assert.equal(rows[0].format,'v+140-1/v');
+ assert.deepEqual(rows.filter(row=>row.kind==='audio').map(row=>row.format),['140-1','251-1']);
+ // Without an "original" marker, undubbed audio still wins; a dub is used only when nothing else exists.
+ assert.equal(formatRows([video,dub('d',200),{id:'plain',ext:'m4a',vcodec:'none',acodec:'aac',tbr:96}])[0].format,'v+plain/v');
+ assert.equal(formatRows([video,dub('d',200)])[0].format,'v+d/v');
+});
+
 test('completed inspections are reused only for the same user and policy; disabled downloads cannot hit the cache', {timeout:90000},async t=>{
  const root=await mkdtemp(path.resolve('test-output/inspection-cache-')),tools=await discoverTools(),file=path.join(root,'source.mp4');
  await runProcess(tools.ffmpeg,['-v','error','-f','lavfi','-i','color=size=128x72:duration=1','-c:v','libx264',file]);const bytes=await readFile(file);let hits=0;
